@@ -1,0 +1,21 @@
+{
+  "name": "sample-repo",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "biome check .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "typescript": "5.7.2",
+    "vitest": "2.1.8"
+  },
+  "allowScripts": {
+    "@biomejs/biome@1.9.4": true,
+    "esbuild@0.21.5": true
+  }
+}

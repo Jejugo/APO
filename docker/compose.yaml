@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: apo
+      POSTGRES_PASSWORD: apo
+      POSTGRES_DB: apo
+    ports:
+      # 5432 já está ocupado por outros projetos neste host (ex.: whatsapp_bot).
+      # O Postgres do APO fica isolado na 5433.
+      - "5433:5432"
+    volumes:
+      - apo-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apo -d apo"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  apo-postgres-data:
+    name: apo-postgres-data

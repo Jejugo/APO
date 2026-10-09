@@ -1,0 +1,12 @@
+quality:
+  commands:
+    build: pnpm build
+    lint: pnpm lint
+    typecheck: pnpm typecheck
+    tests: pnpm test
+
+git:
+  requirePrApproval: true
+
+workspace:
+  defaultMode: auto
