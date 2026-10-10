@@ -64,10 +64,21 @@ async function run(
       timeoutMs: input.timeoutMs,
       signal,
       logPath: input.logPath,
+      ...(input.stallTimeoutMs ? { stallTimeoutMs: input.stallTimeoutMs } : {}),
     });
 
     const durationMs = Date.now() - startedAt;
 
+    if (result.stalled) {
+      return {
+        outcome: "failure",
+        failure: {
+          kind: "stalled",
+          message: `Sem saída nem escrita em disco por ${input.stallTimeoutMs}ms`,
+        },
+        durationMs,
+      };
+    }
     if (result.timedOut) {
       return {
         outcome: "failure",

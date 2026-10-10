@@ -29,6 +29,20 @@
       "when": 1791600201560,
       "tag": "0003_lean_nightmare",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791602827519,
+      "tag": "0004_tough_nehzno",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791602864104,
+      "tag": "0005_daily_nightshade",
+      "breakpoints": true
     }
   ]
 }

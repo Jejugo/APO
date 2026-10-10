@@ -44,7 +44,7 @@ E adiando:
 
 ## 3. Marcos
 
-> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → **M2** → M4 → M5 → M6.
+> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → **M4** → M5 → M6.
 >
 > O failover entre providers (M3) passa na frente do DAG multi-task (M2). É o diferencial que nenhum runtime externo de agent teams oferece, e funciona já em cima do graph do M1, que na prática é o `SingleAgentEngine` (ver seção 4.7). O M2 fica congelado até um triage rápido decidir se o `ApoNativeEngine` precisa mesmo da infraestrutura de times própria ou se parte dela pode vir de um runtime externo.
 >
@@ -77,9 +77,11 @@ E adiando:
 
 ### M2 — Worktrees, workers, paralelismo e política de workspace (≈ Phases 3 e 7 do PLAN.md)
 
-> ⏸ **Congelado (ADR 0003).** Executado depois do M3. **Primeiro item ao descongelar:** triage de engines externos, feito pelo agente em 1–2 horas. A pergunta é uma só por candidato: "dá para disparar, acompanhar e cancelar via CLI, sem terminal interativo?". Ordem: Claude Code Agent Teams, multi-agente nativo do Codex, Antigravity Teamwork. Conforme o resultado, o escopo abaixo pode encolher, principalmente mensageria e ciclo de vida de workers. Nada aqui vira infraestrutura genérica de time sem evidência de necessidade.
->
-> Duas entregas deste marco **já foram puxadas para o M3**, porque o failover depende delas: `ProcessSupervisor` mínimo (M2.3) e `buildWorkerEnvironment()` (M2.22).
+> **Em andamento (pós-triage, ADR 0003 aceito).** O triage do M2.0 (`spikes/execution-engines/`) concluiu que nenhum engine externo entra na V1. O que eles oferecem é paralelismo e mensagem dentro de um único provider, e o Antigravity Teamwork custa ~10 min para uma tarefa trivial. Escopo ajustado com o usuário:
+> - **Fica:** DAG multi-task com provider por Task, worktree por Task, integração de branches com Task corretiva, artefatos tipados entre Tasks, roles + `PromptBuilder`, `FeatureOverlapCheck`, `WorkspacePolicy`.
+> - **Adiado até um caso real:** mailbox entre roles e perguntas bloqueantes (M2.18–M2.21). Os artefatos via DAG cobrem a passagem de informação entre Tasks de providers diferentes.
+> - **Entra:** `AntigravityHarness` (`agy -p`, um agente só) como terceiro provider. A conta Google funciona no `agy` e dá acesso a modelos Gemini, que o Gemini CLI tinha recusado.
+> - `ProcessSupervisor` mínimo (M2.3) e `buildWorkerEnvironment()` (M2.22) já foram entregues no M3.
 
 - `WorktreeManager`, `WorkerManager`, `ProcessSupervisor`, `TaskAttempt`.
 - Planner gera Tasks com dependências; graph faz fan-out/fan-in via `Send`.
@@ -89,10 +91,10 @@ E adiando:
 - **Integração de branches**: merge sequencial em branch de feature, com Task corretiva para conflito.
 - **`FeatureOverlapCheck`** (ver seção 4.4 abaixo): antes de criar uma Feature nova, verifica se ela colide com uma Feature já ativa no Project. Sem colisão, segue isolada; com colisão, **pergunta ao usuário** — nunca absorve automaticamente (ver revisão na seção 4.4).
 - **Roles com prompt injetável** (ver seção 4.5 abaixo): o planner atribui um `role` a cada Task; o `WorkerManager` injeta o `systemPrompt` desse role no prompt do worker, antes do contrato padrão e do conteúdo da Task.
-- **Mailbox entre roles** (ver seção 4.2 abaixo): `packages/messaging/` chega já no M2, não no M4/M6. Mensagem para uma role dinâmica nunca bloqueia quem envia — é entregue no prompt do próximo worker que nascer com aquela role/Task, pelo mesmo mecanismo que já injeta artefatos (M2.9).
+- ~~**Mailbox entre roles**~~ — **adiado** (triage M2.0). O desenho da seção 4.2 continua válido para quando um caso real pedir.
 - **`buildWorkerEnvironment()`**: o `ProcessSupervisor` passa ao worker só uma allowlist de variáveis (`HOME`, `PATH`, `SHELL`, `TERM`, `NODE_ENV` + autorizadas pelo Project) — nunca o environment completo do daemon. Segredos do daemon (Postgres, Jev, GitHub) ficam invisíveis ao worker.
 
-**Aceite:** 3 Tasks em paralelo, sem compartilhar working tree, integradas numa branch. Uma Task read-only roda em modo `shared` sem criar worktree; qualquer Task que escreve recebe worktree isolada. Duas Features **sem** overlap rodam ao mesmo tempo, cada uma com worktree e branch de integração próprias, sem colisão. Uma segunda solicitação que colide com uma Feature em andamento gera uma pergunta ao usuário, nunca é absorvida sem confirmação. Uma Task com `role: frontend-developer` recebe, no prompt do worker, o `systemPrompt` configurado para esse role — verificável no log do attempt. Uma mensagem de uma role para outra é entregue no worker seguinte, sem travar quem enviou. O processo do worker não enxerga nenhuma credencial do daemon.
+**Aceite:** 3 Tasks em paralelo, sem compartilhar working tree, integradas numa branch. Uma Task read-only roda em modo `shared` sem criar worktree; qualquer Task que escreve recebe worktree isolada. Duas Features **sem** overlap rodam ao mesmo tempo, cada uma com worktree e branch de integração próprias, sem colisão. Uma segunda solicitação que colide com uma Feature em andamento gera uma pergunta ao usuário, nunca é absorvida sem confirmação. Uma Task com `role: frontend-developer` recebe, no prompt do worker, o `systemPrompt` configurado para esse role — verificável no log do attempt. Uma Task dependente recebe os artefatos da Task de que depende. Uma Task pode rodar no Gemini via `AntigravityHarness`. O processo do worker não enxerga nenhuma credencial do daemon.
 
 ---
 

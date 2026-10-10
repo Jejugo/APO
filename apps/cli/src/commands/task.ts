@@ -4,8 +4,12 @@ import { daemonRequest } from "../daemon-client.js";
 interface TaskRow {
   id: string;
   featureId: string;
+  seq: number;
   title: string;
   status: string;
+  role: string | null;
+  workspaceMode: string | null;
+  dependencies: string[];
 }
 
 export function registerTaskCommands(program: Command): void {
@@ -21,8 +25,14 @@ export function registerTaskCommands(program: Command): void {
         console.log("Nenhuma task encontrada.");
         return;
       }
-      for (const row of rows) {
-        console.log(`${row.id}  [${row.status}]  ${row.title}`);
+      const seqOf = new Map(rows.map((row) => [row.id, row.seq]));
+      for (const row of [...rows].sort((a, b) => a.seq - b.seq)) {
+        const deps =
+          row.dependencies.length > 0
+            ? `  ← #${row.dependencies.map((dep) => seqOf.get(dep) ?? "?").join(", #")}`
+            : "";
+        const role = row.role ? `  (${row.role}, ${row.workspaceMode ?? "?"})` : "";
+        console.log(`#${row.seq} ${row.id}  [${row.status}]  ${row.title}${role}${deps}`);
       }
     });
 

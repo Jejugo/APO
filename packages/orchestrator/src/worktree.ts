@@ -1,60 +1,176 @@
-// Workspace mínimo (M1.10) — uma worktree por Feature. O WorktreeManager
-// completo (M2.1), com worktree por Task, cleanup e detecção de órfãs, só
-// chega quando o DAG de múltiplas Tasks existir.
+// WorktreeManager (M2.1) e integração de branches (M2.7/M2.8).
+//
+// Layout em disco (seção 3.2): <worktreesRoot>/<featureId>/integration e
+// <worktreesRoot>/<featureId>/<taskId>. Branches:
+//   apo/f<feature>/integration        — onde o trabalho da Feature se junta
+//   apo/f<feature>/t<n>-<slug>        — uma por Task que escreve
+//
+// Toda operação que mexe em refs/worktrees do repositório passa por um lock
+// por repo: `git worktree add` concorrente no mesmo repo disputa locks do .git.
+//
+// (O TECHNICAL_PLAN previa um `packages/git` próprio; com um único consumidor,
+// fica aqui até existir um segundo — regra 3 do PLAN.md.)
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { execa } from "execa";
 
-export interface FeatureWorktree {
-  worktreePath: string;
-  branch: string;
+const repoLocks = new Map<string, Promise<unknown>>();
+
+export function withRepoLock<T>(repoPath: string, fn: () => Promise<T>): Promise<T> {
+  const previous = repoLocks.get(repoPath) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(fn);
+  repoLocks.set(
+    repoPath,
+    next.catch(() => undefined),
+  );
+  return next;
 }
 
-export function featureBranch(featureId: string): string {
-  return `apo/f${featureId}/main`;
+export function integrationBranchName(featureId: string): string {
+  return `apo/f${featureId}/integration`;
 }
 
-/** Idempotente: se a worktree já existe em disco (ex.: recovery após restart do daemon), reaproveita. */
-export async function ensureFeatureWorktree(
+export function taskBranchName(featureId: string, seq: number, title: string): string {
+  const slug =
+    title
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "task";
+  return `apo/f${featureId}/t${seq}-${slug}`;
+}
+
+export function integrationWorktreePath(worktreesRoot: string, featureId: string): string {
+  return join(worktreesRoot, featureId, "integration");
+}
+
+export function taskWorktreePath(worktreesRoot: string, featureId: string, taskId: string): string {
+  return join(worktreesRoot, featureId, taskId);
+}
+
+async function git(cwd: string, args: string[]) {
+  return execa("git", args, { cwd, reject: false });
+}
+
+async function branchExists(repoPath: string, branch: string): Promise<boolean> {
+  const result = await git(repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+  return result.exitCode === 0;
+}
+
+/** Idempotente: reaproveita a worktree se já existir (recovery). */
+async function ensureWorktree(
+  repoPath: string,
+  path: string,
+  branch: string,
+  baseRef: string,
+): Promise<void> {
+  if (existsSync(path)) return;
+  await withRepoLock(repoPath, async () => {
+    if (existsSync(path)) return;
+    const args = (await branchExists(repoPath, branch))
+      ? ["worktree", "add", path, branch]
+      : ["worktree", "add", "-b", branch, path, baseRef];
+    const result = await git(repoPath, args);
+    if (result.exitCode !== 0) {
+      throw new Error(`git worktree add falhou (${path}): ${result.stderr}`);
+    }
+  });
+}
+
+export async function ensureIntegrationWorktree(
   repoPath: string,
   worktreesRoot: string,
   featureId: string,
   defaultBranch: string,
-): Promise<FeatureWorktree> {
-  const branch = featureBranch(featureId);
-  const worktreePath = join(worktreesRoot, featureId);
-
-  if (existsSync(worktreePath)) {
-    return { worktreePath, branch };
-  }
-
-  await execa("git", ["worktree", "add", "-b", branch, worktreePath, defaultBranch], {
-    cwd: repoPath,
-  });
-  return { worktreePath, branch };
+): Promise<{ path: string; branch: string }> {
+  const path = integrationWorktreePath(worktreesRoot, featureId);
+  const branch = integrationBranchName(featureId);
+  await ensureWorktree(repoPath, path, branch, defaultBranch);
+  return { path, branch };
 }
 
-export async function hasNewCommits(worktreePath: string, defaultBranch: string): Promise<boolean> {
-  const result = await execa("git", ["rev-list", "--count", `${defaultBranch}..HEAD`], {
-    cwd: worktreePath,
-  });
+/** A Task nasce do HEAD de integração, para enxergar o código das dependências (M2.7). */
+export async function ensureTaskWorktree(
+  repoPath: string,
+  worktreesRoot: string,
+  featureId: string,
+  taskId: string,
+  branch: string,
+): Promise<string> {
+  const path = taskWorktreePath(worktreesRoot, featureId, taskId);
+  await ensureWorktree(repoPath, path, branch, integrationBranchName(featureId));
+  return path;
+}
+
+export type MergeResult =
+  | { status: "merged" | "already_merged" }
+  | { status: "conflict"; files: string[] };
+
+/** Merge `--no-ff` da branch da Task na integração. Em conflito: `merge --abort` (M2.8). */
+export async function mergeIntoIntegration(
+  integrationPath: string,
+  branch: string,
+  message: string,
+): Promise<MergeResult> {
+  const ancestor = await git(integrationPath, ["merge-base", "--is-ancestor", branch, "HEAD"]);
+  if (ancestor.exitCode === 0) return { status: "already_merged" };
+
+  const merge = await git(integrationPath, ["merge", "--no-ff", "-m", message, branch]);
+  if (merge.exitCode === 0) return { status: "merged" };
+
+  const conflicted = await git(integrationPath, ["diff", "--name-only", "--diff-filter=U"]);
+  await git(integrationPath, ["merge", "--abort"]);
+  return { status: "conflict", files: conflicted.stdout.split("\n").filter(Boolean) };
+}
+
+/** Reproduz o conflito na integração para a Task corretiva resolver (sem commitar). */
+export async function startConflictMerge(integrationPath: string, branch: string): Promise<void> {
+  const inProgress = await git(integrationPath, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+  if (inProgress.exitCode === 0) return;
+  await git(integrationPath, ["merge", "--no-ff", "--no-commit", branch]);
+}
+
+export async function abortMergeIfAny(path: string): Promise<void> {
+  const inProgress = await git(path, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+  if (inProgress.exitCode === 0) {
+    await git(path, ["merge", "--abort"]);
+  }
+}
+
+export async function hasConflictMarkers(path: string): Promise<boolean> {
+  const unmerged = await git(path, ["diff", "--name-only", "--diff-filter=U"]);
+  if (unmerged.stdout.trim().length > 0) return true;
+  const grep = await git(path, ["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>) "]);
+  return grep.stdout.trim().length > 0;
+}
+
+export async function hasNewCommits(worktreePath: string, baseRef: string): Promise<boolean> {
+  const result = await git(worktreePath, ["rev-list", "--count", `${baseRef}..HEAD`]);
   return Number(result.stdout.trim()) > 0;
+}
+
+export async function changedPathsSince(worktreePath: string, baseRef: string): Promise<string[]> {
+  const base = await git(worktreePath, ["merge-base", "HEAD", baseRef]);
+  const result = await git(worktreePath, ["diff", "--name-only", `${base.stdout.trim()}..HEAD`]);
+  return result.stdout.split("\n").filter(Boolean);
 }
 
 /**
  * Git/commit é responsabilidade determinística da infraestrutura, não do
- * agente (regra 10 do PLAN.md; TECHNICAL_PLAN.md seção 6.3: "working tree
- * suja → o WorkerManager faz um commit wip"). Confirmado necessário em
- * execução real: o Claude Code escreveu os arquivos pedidos mas não comitou
- * por conta própria. Retorna `true` se um commit novo foi criado.
+ * agente (regra 10 do PLAN.md; seção 6.3). Confirmado necessário na validação
+ * do M1: o Claude Code escreveu os arquivos pedidos mas não comitou. Com um
+ * merge em andamento (Task corretiva), o commit conclui o merge.
  */
 export async function commitIfDirty(worktreePath: string, message: string): Promise<boolean> {
-  const status = await execa("git", ["status", "--porcelain"], { cwd: worktreePath });
+  const status = await git(worktreePath, ["status", "--porcelain"]);
   if (status.stdout.trim().length === 0) {
-    return false;
+    const merging = await git(worktreePath, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+    if (merging.exitCode !== 0) return false;
   }
-  await execa("git", ["add", "-A"], { cwd: worktreePath });
-  await execa("git", ["commit", "-m", message], { cwd: worktreePath });
-  return true;
+  await git(worktreePath, ["add", "-A"]);
+  const commit = await git(worktreePath, ["commit", "-m", message]);
+  return commit.exitCode === 0;
 }

@@ -26,8 +26,44 @@ export type { AttemptAbortReason } from "./attempt-control.js";
 export { buildHandover, renderHandoverForPrompt } from "./handover.js";
 export type { TaskHandoverPayload } from "./handover.js";
 
-export { ensureFeatureWorktree, featureBranch, hasNewCommits } from "./worktree.js";
-export type { FeatureWorktree } from "./worktree.js";
+export {
+  changedPathsSince,
+  ensureIntegrationWorktree,
+  ensureTaskWorktree,
+  hasNewCommits,
+  integrationBranchName,
+  integrationWorktreePath,
+  mergeIntoIntegration,
+  taskBranchName,
+} from "./worktree.js";
+export type { MergeResult } from "./worktree.js";
 
-export { verifyTask } from "./verify.js";
+export { loadProjectConfig, prepareWorktree, verifyIntegration } from "./verify.js";
 export type { VerifyResult } from "./verify.js";
+
+export {
+  FeaturePlanSchema,
+  PlannedTaskSchema,
+  WORKFLOW_TEMPLATES,
+  planFeature,
+  planWaves,
+  singleTaskPlan,
+  validatePlan,
+} from "./plan.js";
+export type { FeaturePlan, PlanFeatureResult, PlannedTask } from "./plan.js";
+
+export { WORKER_CONTRACT, buildWorkerPrompt } from "./prompt-builder.js";
+export type { WorkerPromptInput } from "./prompt-builder.js";
+
+export { decideWorkspace } from "./workspace-policy.js";
+export type { WorkspaceMode } from "./workspace-policy.js";
+
+export { WorkerSlots } from "./worker-slots.js";
+
+export { runTask } from "./task-runner.js";
+export type { EngineDeps, FeatureContext, TaskRunOutcome } from "./task-runner.js";
+
+export { appendTasks } from "./append-tasks.js";
+
+export { checkFeatureOverlap, sharedPathsOf } from "./overlap.js";
+export type { ActiveFeatureFootprint, FeatureOverlapResult, OverlapCheckInput } from "./overlap.js";

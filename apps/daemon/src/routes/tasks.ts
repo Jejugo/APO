@@ -6,7 +6,7 @@ import type { ServerDeps } from "../server-deps.js";
 
 const rerouteSchema = z
   .object({
-    harness: z.enum(["claude-code", "codex", "gemini-cli", "fake"]).optional(),
+    harness: z.enum(["claude-code", "codex", "gemini-cli", "antigravity", "fake"]).optional(),
     provider: z.enum(["anthropic", "openai", "google"]).optional(),
   })
   .refine((body) => body.harness !== undefined || body.provider !== undefined, {
@@ -51,7 +51,7 @@ export function registerTaskRoutes(app: FastifyInstance, deps: ServerDeps): void
       ...(body.provider ? { provider: body.provider } : {}),
     };
 
-    const interrupted = deps.featureRunner.reroute(task.featureId, preference);
+    const interrupted = deps.featureRunner.reroute(task.featureId, id, preference);
     if (!interrupted) {
       await deps.tasks.update(id, { executionPreference: preference });
     }

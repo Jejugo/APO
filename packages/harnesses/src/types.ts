@@ -41,10 +41,15 @@ export interface AgentExecutionInput {
    * falha rápido em nenhum dos dois CLIs reais (~4,4min no Claude Code, ~10-15s
    * de retry no Codex). Sem timeout, isso trava um worker indefinidamente. */
   timeoutMs: number;
+  /** Sem saída e sem escrita em disco por esse tempo → falha `stalled` (M2.3). */
+  stallTimeoutMs?: number;
   logPath: string;
   /** Environment completo do processo do CLI. Ausente → `buildWorkerEnvironment()`
    * (allowlist). Nunca é o `process.env` do daemon (seção 6.3). */
   env?: Record<string, string>;
+  /** Diretórios fora do `cwd` onde o worker pode escrever (ex.: o diretório do
+   * `$APO_RESULT_PATH`, que fica fora do repo — seção 6.3). Vira `--add-dir`. */
+  extraWritableDirs?: string[];
 }
 
 export interface ResumeExecutionInput extends AgentExecutionInput {

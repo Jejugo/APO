@@ -2,8 +2,8 @@
 // recovery, paralelismo e loops de correção são testados em segundos e sem
 // custo — nenhuma Task real precisa de Claude Code/Codex para ser testada.
 
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { HarnessId, ProviderId } from "@apo/domain";
 import { execa } from "execa";
 import type {
@@ -21,12 +21,15 @@ export interface FakeHarnessStep {
   fail?: { kind: FailureKind; resetInMs?: number };
   succeed?: { finalMessage?: string; structuredOutput?: unknown };
   delayMs?: number;
+  /** WorkerReport gravado em `$APO_RESULT_PATH` (seção 6.3). */
+  report?: unknown;
 }
 
 export interface FakeHarnessOptions {
   label?: string;
   provider?: ProviderId;
-  script: FakeHarnessStep[];
+  script?: FakeHarnessStep[];
+  respond?: (input: AgentExecutionInput) => FakeHarnessStep | undefined;
 }
 
 export class FakeHarness implements AgentHarness {
@@ -34,12 +37,16 @@ export class FakeHarness implements AgentHarness {
   readonly provider: ProviderId;
   private readonly label: string;
   private readonly script: readonly FakeHarnessStep[];
+  private readonly respond: FakeHarnessOptions["respond"];
   private cursor = 0;
+  /** Prompts recebidos, na ordem — permite verificar o PromptBuilder nos testes. */
+  readonly receivedPrompts: string[] = [];
 
   constructor(options: FakeHarnessOptions) {
     this.provider = options.provider ?? "anthropic";
     this.label = options.label ?? "fake";
-    this.script = options.script;
+    this.script = options.script ?? [];
+    this.respond = options.respond;
   }
 
   getCapabilities(): AgentCapabilities {
@@ -62,7 +69,11 @@ export class FakeHarness implements AgentHarness {
       };
     }
 
-    const step: FakeHarnessStep = this.script[this.cursor] ?? { succeed: {} };
+    this.receivedPrompts.push(input.prompt);
+    // `respond` escolhe o passo pelo input — necessário quando várias Tasks
+    // rodam em paralelo no mesmo harness e a ordem das chamadas não é fixa.
+    const step: FakeHarnessStep = this.respond?.(input) ??
+      this.script[this.cursor] ?? { succeed: {} };
     this.cursor += 1;
 
     if (step.delayMs !== undefined) {
@@ -94,7 +105,13 @@ export class FakeHarness implements AgentHarness {
     }
 
     if (step.writeFile) {
+      await mkdir(dirname(join(input.cwd, step.writeFile.path)), { recursive: true });
       await writeFile(join(input.cwd, step.writeFile.path), step.writeFile.content, "utf8");
+    }
+    const resultPath = input.env?.APO_RESULT_PATH;
+    if (step.report !== undefined && resultPath) {
+      await mkdir(dirname(resultPath), { recursive: true });
+      await writeFile(resultPath, JSON.stringify(step.report), "utf8");
     }
     if (step.commit) {
       await execa("git", ["add", "-A"], { cwd: input.cwd });

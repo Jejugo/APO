@@ -66,6 +66,35 @@ export class FeatureRepository {
     return this.db.select().from(features).where(eq(features.projectId, projectId));
   }
 
+  update(id: string, changes: Partial<{ integrationBranch: string; plan: unknown }>) {
+    return this.db
+      .update(features)
+      .set({ ...changes, updatedAt: new Date() })
+      .where(eq(features.id, id))
+      .returning()
+      .then(([row]) => row);
+  }
+
+  /** Features ainda ativas de um Project (FeatureOverlapCheck, seção 6.6). */
+  listActiveByProject(projectId: string) {
+    return this.db
+      .select()
+      .from(features)
+      .where(
+        and(
+          eq(features.projectId, projectId),
+          inArray(features.status, [
+            "planning",
+            "executing",
+            "integrating",
+            "validating",
+            "reviewing",
+            "fixing",
+          ]),
+        ),
+      );
+  }
+
   updateExecutionPreference(id: string, executionPreference: unknown) {
     return this.db
       .update(features)
@@ -119,7 +148,11 @@ export class TaskRepository {
       status: TaskStatus;
       worktreePath: string;
       branch: string;
+      workspaceMode: string;
       executionPreference: unknown;
+      artifacts: unknown;
+      summary: string | null;
+      actualChangedPaths: string[];
     }>,
   ) {
     return this.db

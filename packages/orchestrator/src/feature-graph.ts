@@ -1,49 +1,54 @@
-// Graph do SingleAgentEngine (ADR 0003): uma Task por Feature.
+// ApoNativeEngine (ADR 0003): o graph de uma Feature.
 //
-//   triage → plan → execute ⇄ (retry) → verify → complete
+//   triage → plan → execute_wave ⇄ (próxima onda) → verify → complete
 //
-// M1.9: `plan` cria uma Task igual ao objetivo, sem LLM (o planner via LLM é
-// o M2.5). "triage" é o node de entrada do graph, não o IntentTriage do
-// ROADMAP.md §4.3 — esse decide bugfix/feature ANTES do graph começar.
+// - plan (M2.5): usa o plano já gerado e validado na criação da Feature
+//   (`features.plan`) ou cai para uma Task só. Cria a branch e a worktree de
+//   integração.
+// - execute_wave (M2.6/M2.7/M2.8): roda em paralelo as Tasks cujas
+//   dependências já foram integradas, cada uma com failover próprio
+//   (task-runner.ts), e então faz merge `--no-ff` das concluídas na integração,
+//   em ordem. Conflito → `merge --abort` + Task corretiva anexada à Feature.
+// - verify: worktree de integração (prepare + testes do project.yaml).
 //
-// M3: `execute` resolve o target (ExecutionTargetResolver + RuleBasedRouter
-// com capacidade), roda um attempt e, se o provider falhar, atualiza a
-// capacidade, gera um handover determinístico e volta para `execute` com
-// outro target — na mesma worktree e branch. Sem target disponível, a Feature
-// vai para `paused_capacity`; target forçado indisponível vai para
-// `needs_human`.
+// Limitação aceita (TECHNICAL_PLAN.md, "barreira de onda"): uma Task da onda
+// seguinte espera a onda inteira terminar, mesmo que dependa só de uma Task
+// rápida. Determinístico e simples de testar; otimização fica para depois.
+//
+// Os nodes são idempotentes: recovery (M1.13) e saída de paused_capacity
+// (M3.9) re-invocam o graph do zero.
 
-import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import type {
-  EventRepository,
-  FeatureRepository,
-  HandoverRepository,
-  RoutingDecisionRepository,
-  TaskAttemptRepository,
-  TaskRepository,
-} from "@apo/db";
-import type { ExecutionPreference } from "@apo/domain";
-import type { AgentFailure } from "@apo/harnesses";
-import { type Logger, emitEvent } from "@apo/observability";
-import {
-  type CapacityMonitor,
-  type ResolveResult,
-  type RoutingPolicy,
-  resolveExecutionTarget,
-} from "@apo/routing";
+import { emitEvent } from "@apo/observability";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
-import { type AttemptControl, abortReasonOf } from "./attempt-control.js";
-import { type TaskHandoverPayload, buildHandover, renderHandoverForPrompt } from "./handover.js";
-import { type TargetRegistry, candidatesOf, findTarget } from "./harness-registry.js";
-import { verifyTask } from "./verify.js";
-import { commitIfDirty, ensureFeatureWorktree } from "./worktree.js";
+import { appendTasks } from "./append-tasks.js";
+import type { AttemptControl } from "./attempt-control.js";
+import { candidatesOf } from "./harness-registry.js";
+import { FeaturePlanSchema, singleTaskPlan, validatePlan } from "./plan.js";
+import {
+  type EngineDeps,
+  type FeatureContext,
+  type TaskRunOutcome,
+  runTask,
+} from "./task-runner.js";
+import { verifyIntegration } from "./verify.js";
+import {
+  ensureIntegrationWorktree,
+  integrationBranchName,
+  integrationWorktreePath,
+  mergeIntoIntegration,
+} from "./worktree.js";
 
-export const DEFAULT_TASK_TIMEOUT_MS = 10 * 60 * 1000;
+export { DEFAULT_TASK_TIMEOUT_MS } from "./task-runner.js";
 
-type Outcome = "success" | "failure" | "cancelled" | "retry" | "paused_capacity" | "needs_human";
+type Outcome =
+  | "continue"
+  | "integrated"
+  | "success"
+  | "failure"
+  | "cancelled"
+  | "paused_capacity"
+  | "needs_human";
 
 export const FeatureGraphState = Annotation.Root({
   featureId: Annotation<string>,
@@ -52,18 +57,9 @@ export const FeatureGraphState = Annotation.Root({
   defaultBranch: Annotation<string>,
   objective: Annotation<string>,
   worktreesRoot: Annotation<string>,
-  taskId: Annotation<string | undefined>,
-  worktreePath: Annotation<string | undefined>,
-  branch: Annotation<string | undefined>,
-  // `null` = valor resetado explicitamente pelo triage (re-invocação após
-  // recovery/pausa reaproveita o checkpoint; sem reset, um outcome antigo vazaria).
+  // `null` = reset explícito no triage (re-invocação reaproveita o checkpoint).
   outcome: Annotation<Outcome | null | undefined>,
   failureReason: Annotation<string | null | undefined>,
-  attemptsInRun: Annotation<number | undefined>,
-  excludeTargets: Annotation<string[] | undefined>,
-  lastFailureWasCapacity: Annotation<boolean | undefined>,
-  /** Handover a entregar ao próximo attempt. Sobrevive a pausa/restart de propósito. */
-  pendingHandoverId: Annotation<string | null | undefined>,
 });
 
 export type FeatureGraphInput = Pick<
@@ -71,423 +67,204 @@ export type FeatureGraphInput = Pick<
   "featureId" | "projectId" | "repoPath" | "defaultBranch" | "objective" | "worktreesRoot"
 >;
 
-export interface FeatureGraphDeps {
-  logger: Logger;
-  features: FeatureRepository;
-  tasks: TaskRepository;
-  taskAttempts: TaskAttemptRepository;
-  events: EventRepository;
-  routingDecisions: RoutingDecisionRepository;
-  handovers: HandoverRepository;
-  targets: TargetRegistry;
-  capacity: CapacityMonitor;
-  maxAttemptsPerTask: number;
-  routingPolicy?: RoutingPolicy;
-  /** Environment do worker (allowlist + extras do Project). Ausente → default do harness. */
-  workerEnv?: (repoPath: string) => Record<string, string>;
-  attemptLogPath?: (attemptId: string) => string;
-  timeoutMs?: number;
+export type FeatureGraphDeps = EngineDeps;
+
+const TERMINAL_TASK = new Set(["completed", "failed", "cancelled", "needs_human"]);
+
+function contextOf(state: typeof FeatureGraphState.State): FeatureContext {
+  return {
+    featureId: state.featureId,
+    projectId: state.projectId,
+    repoPath: state.repoPath,
+    defaultBranch: state.defaultBranch,
+    objective: state.objective,
+    worktreesRoot: state.worktreesRoot,
+  };
 }
 
-const CAPACITY_FAILURES = new Set(["rate_limited", "quota_exhausted", "auth"]);
-const RETRYABLE_FAILURES = new Set([
-  "rate_limited",
-  "quota_exhausted",
-  "auth",
-  "crash",
-  "timeout",
-  "stalled",
-]);
-
-function buildWorkerPrompt(objective: string, handover: TaskHandoverPayload | undefined): string {
-  const base = `Você é um worker do orquestrador APO, trabalhando numa worktree git isolada. Implemente o seguinte objetivo e faça commit do trabalho na branch atual:\n\n${objective}`;
-  return handover ? `${base}\n\n${renderHandoverForPrompt(handover)}` : base;
-}
-
-function defaultAttemptLogPath(attemptId: string): string {
-  return join(homedir(), ".apo", "logs", "attempts", `${attemptId}.log`);
-}
-
-function attemptStatusFor(failure: AgentFailure | undefined) {
-  if (!failure) return "completed" as const;
-  if (failure.kind === "cancelled") return "cancelled" as const;
-  if (failure.kind === "rate_limited") return "rate_limited" as const;
-  if (failure.kind === "stalled") return "stalled" as const;
-  return "failed" as const;
+/** Pior resultado da onda decide o rumo da Feature. */
+function aggregate(outcomes: TaskRunOutcome[]): { outcome: Outcome; reason?: string } {
+  const pick = (status: TaskRunOutcome["status"]) =>
+    outcomes.find((outcome) => outcome.status === status);
+  const order: Array<[TaskRunOutcome["status"], Outcome]> = [
+    ["cancelled", "cancelled"],
+    ["needs_human", "needs_human"],
+    ["failed", "failure"],
+    ["paused_capacity", "paused_capacity"],
+  ];
+  for (const [status, outcome] of order) {
+    const found = pick(status);
+    if (found) return { outcome, ...(found.reason ? { reason: found.reason } : {}) };
+  }
+  return { outcome: "continue" };
 }
 
 export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseCheckpointSaver) {
-  const capacityOf = (provider: Parameters<CapacityMonitor["get"]>[0]) =>
-    deps.capacity.get(provider);
-
-  async function recordRouting(
-    taskId: string,
-    resolved: ResolveResult,
-    input: Record<string, unknown>,
-  ) {
-    await deps.routingDecisions.insert({
-      id: randomUUID(),
-      taskId,
-      router:
-        resolved.kind === "target" && resolved.resolutionSource !== "rule_router"
-          ? "override"
-          : "rule",
-      resolutionSource: resolved.kind === "target" ? resolved.resolutionSource : resolved.kind,
-      input,
-      output: {
-        kind: resolved.kind,
-        reason: resolved.reason,
-        ...("route" in resolved && resolved.route ? { considered: resolved.route.considered } : {}),
-      },
-      finalTarget: resolved.kind === "target" ? resolved.target : null,
-    });
-  }
-
   const graph = new StateGraph(FeatureGraphState)
     .addNode("triage", async (state) => {
       await deps.features.updateStatus(state.featureId, "planning");
-      return {
-        outcome: null,
-        failureReason: null,
-        attemptsInRun: 0,
-        excludeTargets: [],
-        lastFailureWasCapacity: false,
-      };
+      return { outcome: null, failureReason: null };
     })
     .addNode("plan", async (state) => {
-      // Idempotente: recovery (M1.13) re-invoca o graph do zero — se a Task já
-      // existe, reaproveita em vez de duplicar.
-      const existing = await deps.tasks.listByFeature(state.featureId);
-      if (existing.length > 0) {
-        await deps.features.updateStatus(state.featureId, "executing");
-        return { taskId: existing[0]?.id };
-      }
-
-      // A Task nasce sem override: a preferência fica na Feature (--harness) e
-      // é herdada na resolução (hierarquia da seção 6.5).
-      const taskId = randomUUID();
-      await deps.tasks.create({
-        id: taskId,
-        featureId: state.featureId,
-        title: state.objective.slice(0, 120),
-        description: state.objective,
-        kind: "write",
-        status: "ready",
-        dependencies: [],
-      });
-      await deps.features.updateStatus(state.featureId, "executing");
-      return { taskId };
-    })
-    .addNode("execute", async (state, runtime) => {
-      const taskId = state.taskId;
-      if (!taskId) {
-        throw new Error("feature-graph: taskId ausente ao entrar em 'execute'");
-      }
-
-      // Idempotente: se esta Task já concluiu antes de um crash (ex.: durante
-      // 'verify'/'complete'), não roda o worker de novo.
-      const existingTask = await deps.tasks.getById(taskId);
-      if (existingTask?.status === "completed") {
-        return {
-          ...(existingTask.worktreePath !== null
-            ? { worktreePath: existingTask.worktreePath }
-            : {}),
-          ...(existingTask.branch !== null ? { branch: existingTask.branch } : {}),
-          outcome: "success" as const,
-        };
-      }
-
-      const attemptsInRun = state.attemptsInRun ?? 0;
-      if (attemptsInRun >= deps.maxAttemptsPerTask) {
-        await deps.tasks.updateStatus(taskId, "failed");
-        return {
-          outcome: "failure" as const,
-          failureReason: `limite de ${deps.maxAttemptsPerTask} attempts atingido`,
-        };
-      }
-
-      const { worktreePath, branch } = await ensureFeatureWorktree(
+      await ensureIntegrationWorktree(
         state.repoPath,
         state.worktreesRoot,
         state.featureId,
         state.defaultBranch,
       );
-      await deps.tasks.update(taskId, { worktreePath, branch, status: "running" });
-
-      const feature = await deps.features.getById(state.featureId);
-      const taskPreference = (existingTask?.executionPreference ??
-        null) as ExecutionPreference | null;
-      const featurePreference = (feature?.executionPreference ??
-        null) as ExecutionPreference | null;
-      const exclude = state.excludeTargets ?? [];
-
-      const resolve = (excluded: string[]) =>
-        resolveExecutionTarget({
-          candidates: candidatesOf(deps.targets),
-          capacity: capacityOf,
-          taskPreference,
-          featurePreference,
-          exclude: excluded,
-          ...(deps.routingPolicy ? { policy: deps.routingPolicy } : {}),
-        });
-      let resolved = resolve(exclude);
-      // A exclusão vem de crash/timeout (problema da Task, não do provider).
-      // Se ela esvaziou as opções, tentar de novo no mesmo target é melhor do
-      // que pausar por "falta de capacidade" que não existe.
-      if (resolved.kind === "no_capacity" && exclude.length > 0) {
-        resolved = resolve([]);
-      }
-      await recordRouting(taskId, resolved, {
-        taskPreference,
-        featurePreference,
-        exclude,
-        capacity: candidatesOf(deps.targets).map((candidate) => capacityOf(candidate.provider)),
+      await deps.features.update(state.featureId, {
+        integrationBranch: integrationBranchName(state.featureId),
       });
 
-      if (resolved.kind === "needs_human") {
-        await deps.tasks.updateStatus(taskId, "needs_human");
-        return {
-          worktreePath,
-          branch,
-          outcome: "needs_human" as const,
-          failureReason: resolved.reason,
-        };
-      }
-      if (resolved.kind === "no_capacity") {
-        await deps.tasks.updateStatus(taskId, "retrying");
-        return {
-          worktreePath,
-          branch,
-          outcome: "paused_capacity" as const,
-          failureReason: resolved.reason,
-        };
-      }
-
-      // Depois de uma falha de capacidade, um target degradado não é
-      // alternativa: tentar de novo nele só queimaria quota. Melhor pausar.
-      const chosenCapacity = capacityOf(resolved.target.provider);
-      if (state.lastFailureWasCapacity && chosenCapacity.availability === "degraded") {
-        await deps.tasks.updateStatus(taskId, "retrying");
-        return {
-          worktreePath,
-          branch,
-          outcome: "paused_capacity" as const,
-          failureReason: "só restaram providers degradados depois de uma falha de capacidade",
-        };
-      }
-
-      const entry = findTarget(deps.targets, resolved.target.targetId);
-      if (!entry) {
-        throw new Error(
-          `feature-graph: target "${resolved.target.targetId}" sem harness registrado`,
-        );
-      }
-
-      const handover = state.pendingHandoverId
-        ? ((await deps.handovers.getById(state.pendingHandoverId))?.payload as
-            | TaskHandoverPayload
-            | undefined)
-        : undefined;
-
-      const previousAttempts = await deps.taskAttempts.listByTask(taskId);
-      const n = previousAttempts.length + 1;
-      const attemptId = randomUUID();
-      const logPath = (deps.attemptLogPath ?? defaultAttemptLogPath)(attemptId);
-
-      await deps.taskAttempts.create({
-        id: attemptId,
-        taskId,
-        n,
-        provider: entry.harness.provider,
-        harness: entry.harness.id,
-        targetId: entry.candidate.targetId,
-        resolutionSource: resolved.resolutionSource,
-        ...(state.pendingHandoverId ? { handoverId: state.pendingHandoverId } : {}),
-        ...(entry.candidate.model !== undefined ? { model: entry.candidate.model } : {}),
-        logPath,
-        status: "working",
-      });
-      await emitEvent(deps.events, deps.logger, {
-        type: "attempt.started",
-        projectId: state.projectId,
-        featureId: state.featureId,
-        taskId,
-        payload: { attemptId, n, target: entry.candidate.targetId, reason: resolved.reason },
-      });
-
-      const control = runtime.configurable?.attemptControl as AttemptControl | undefined;
-      const signal = control?.newAttempt() ?? new AbortController().signal;
-      const env = deps.workerEnv?.(state.repoPath);
-
-      deps.capacity.workerStarted(entry.harness.provider);
-      let result: Awaited<ReturnType<typeof entry.harness.execute>>;
-      try {
-        result = await entry.harness.execute(
-          {
-            prompt: buildWorkerPrompt(state.objective, handover),
-            cwd: worktreePath,
-            mode: "workspace-write",
-            networkAccess: false,
-            timeoutMs: deps.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS,
-            logPath,
-            ...(entry.candidate.model !== undefined ? { model: entry.candidate.model } : {}),
-            ...(env ? { env } : {}),
-          },
-          signal,
-        );
-      } finally {
-        deps.capacity.workerFinished(entry.harness.provider);
-      }
-
-      await deps.taskAttempts.update(attemptId, {
-        status: attemptStatusFor(result.failure),
-        failureKind: result.failure?.kind ?? null,
-        failureMessage: result.failure?.message.slice(0, 2_000) ?? null,
-        endedAt: new Date(),
-      });
-
-      if (result.outcome === "success") {
-        deps.capacity.recordSuccess(entry.harness.provider);
-        // Git/commit é responsabilidade determinística da infraestrutura, não
-        // do agente (regra 10 do PLAN.md) — o worker pode escrever os arquivos
-        // certos e não comitar (confirmado na validação do M1).
-        await commitIfDirty(worktreePath, `apo: wip ${state.objective.slice(0, 72)}`);
-        return {
-          worktreePath,
-          branch,
-          outcome: "success" as const,
-          attemptsInRun: attemptsInRun + 1,
-          pendingHandoverId: null,
-        };
-      }
-
-      const failure = result.failure ?? { kind: "crash" as const, message: "falha sem detalhe" };
-      const abortReason = abortReasonOf(signal);
-      const failures = [
-        ...previousAttempts
-          .filter((attempt) => attempt.failureMessage)
-          .map((attempt) => `${attempt.targetId ?? attempt.harness}: ${attempt.failureMessage}`),
-        `${entry.candidate.targetId}: ${failure.message}`,
-      ];
-
-      // Reroute manual (M3.10): o attempt foi interrompido de propósito para
-      // trocar de target. A nova preferência vira override da Task.
-      if (failure.kind === "cancelled" && abortReason?.type === "reroute") {
-        await deps.tasks.update(taskId, {
-          executionPreference: abortReason.preference,
-          status: "retrying",
-        });
-        const handoverId = await persistHandover(
-          taskId,
-          attemptId,
-          n,
-          worktreePath,
-          state,
-          failures,
-          result.finalMessage,
-        );
+      const existing = await deps.tasks.listByFeature(state.featureId);
+      if (existing.length === 0) {
+        const feature = await deps.features.getById(state.featureId);
+        const parsed = FeaturePlanSchema.safeParse(feature?.plan);
+        let plan = parsed.success ? parsed.data : undefined;
+        if (!plan || !validatePlan(plan).ok) {
+          plan = singleTaskPlan(state.objective);
+        }
+        const ids = await appendTasks(deps.tasks, state.featureId, plan, "plan");
         await emitEvent(deps.events, deps.logger, {
-          type: "task.rerouted",
+          type: "feature.planned",
           projectId: state.projectId,
           featureId: state.featureId,
-          taskId,
-          payload: {
-            fromTarget: entry.candidate.targetId,
-            preference: abortReason.preference,
-            handoverId,
-          },
+          payload: { tasks: ids.length, fromStoredPlan: parsed.success },
         });
+      }
+      await deps.features.updateStatus(state.featureId, "executing");
+      return {};
+    })
+    .addNode("execute_wave", async (state, runtime) => {
+      const control = runtime.configurable?.attemptControl as AttemptControl | undefined;
+      if (control?.isCancelled()) {
+        return { outcome: "cancelled" as const, failureReason: "Feature cancelada" };
+      }
+
+      const tasks = await deps.tasks.listByFeature(state.featureId);
+      const byId = new Map(tasks.map((task) => [task.id, task]));
+      const stuck = tasks.find((task) => task.status === "failed" || task.status === "needs_human");
+      if (stuck) {
         return {
-          worktreePath,
-          branch,
-          outcome: "retry" as const,
-          attemptsInRun: attemptsInRun + 1,
-          excludeTargets: [],
-          lastFailureWasCapacity: false,
-          pendingHandoverId: handoverId,
+          outcome: stuck.status === "failed" ? ("failure" as const) : ("needs_human" as const),
+          failureReason: `Task "${stuck.title}" está ${stuck.status}`,
         };
       }
 
-      if (failure.kind === "cancelled") {
-        await deps.tasks.updateStatus(taskId, "cancelled");
-        return {
-          worktreePath,
-          branch,
-          outcome: "cancelled" as const,
-          failureReason: failure.message,
-        };
-      }
-
-      deps.capacity.recordFailure(entry.harness.provider, failure);
-      const isCapacity = CAPACITY_FAILURES.has(failure.kind);
-
-      if (!RETRYABLE_FAILURES.has(failure.kind) || attemptsInRun + 1 >= deps.maxAttemptsPerTask) {
-        await deps.tasks.updateStatus(taskId, "failed");
-        return {
-          worktreePath,
-          branch,
-          outcome: "failure" as const,
-          failureReason: failure.message,
-          attemptsInRun: attemptsInRun + 1,
-        };
-      }
-
-      // Failover (M3.8): handover → Task retrying → novo attempt, mesma worktree.
-      await deps.tasks.updateStatus(taskId, "retrying");
-      const handoverId = await persistHandover(
-        taskId,
-        attemptId,
-        n,
-        worktreePath,
-        state,
-        failures,
-        result.finalMessage,
+      // Corretivas de conflito vêm antes de tudo: a integração precisa estar
+      // limpa para as próximas Tasks nascerem dela.
+      const pendingConflicts = tasks.filter(
+        (task) => task.origin === "conflict" && !TERMINAL_TASK.has(task.status),
       );
+      const ready = (pendingConflicts.length > 0 ? pendingConflicts : tasks).filter(
+        (task) =>
+          !TERMINAL_TASK.has(task.status) &&
+          task.dependencies.every((depId) => byId.get(depId)?.status === "completed"),
+      );
+
+      if (ready.length === 0) {
+        const unfinished = tasks.filter((task) => task.status !== "completed");
+        return unfinished.length === 0
+          ? { outcome: "integrated" as const }
+          : {
+              outcome: "failure" as const,
+              failureReason: `Tasks bloqueadas por dependências: ${unfinished.map((task) => task.title).join(", ")}`,
+            };
+      }
+
       await emitEvent(deps.events, deps.logger, {
-        type: "task.failover",
+        type: "wave.started",
         projectId: state.projectId,
         featureId: state.featureId,
-        taskId,
-        payload: { fromTarget: entry.candidate.targetId, failureKind: failure.kind, handoverId },
+        payload: { tasks: ready.map((task) => task.title) },
       });
 
-      return {
-        worktreePath,
-        branch,
-        outcome: "retry" as const,
-        attemptsInRun: attemptsInRun + 1,
-        // Falha de capacidade já tira o provider da disputa via CapacityMonitor;
-        // crash/timeout tira o target específico da próxima escolha.
-        excludeTargets: isCapacity ? exclude : [...exclude, entry.candidate.targetId],
-        lastFailureWasCapacity: isCapacity,
-        pendingHandoverId: handoverId,
-      };
+      const context = contextOf(state);
+      const outcomes = await Promise.all(
+        ready.map((task) => runTask(deps, context, task.id, control)),
+      );
+
+      // Integração incremental (M2.7): merge das Tasks isoladas concluídas, em ordem.
+      const integrationPath = integrationWorktreePath(state.worktreesRoot, state.featureId);
+      const completedIsolated = (
+        await Promise.all(ready.map((task) => deps.tasks.getById(task.id)))
+      )
+        .filter(
+          (task) =>
+            task?.status === "completed" && task.workspaceMode === "isolated" && task.branch,
+        )
+        .sort((a, b) => (a?.seq ?? 0) - (b?.seq ?? 0));
+
+      for (const task of completedIsolated) {
+        if (!task?.branch) continue;
+        const merge = await mergeIntoIntegration(
+          integrationPath,
+          task.branch,
+          `apo: integra ${task.title.slice(0, 60)}`,
+        );
+        if (merge.status === "conflict") {
+          // M2.8: conflito vira Task corretiva, nunca resolução silenciosa.
+          await appendTasks(
+            deps.tasks,
+            state.featureId,
+            {
+              tasks: [
+                {
+                  key: "fix",
+                  title: `Resolver conflito ao integrar "${task.title}"`,
+                  description: [
+                    `Há um merge em andamento da branch ${task.branch} nesta worktree de integração, com conflitos em: ${merge.files.join(", ")}.`,
+                    "Resolva os conflitos preservando a intenção das duas partes, sem descartar trabalho de nenhuma.",
+                    "Não rode `git merge --abort`.",
+                  ].join(" "),
+                  kind: "write",
+                  role: "generic",
+                  expectedPaths: merge.files,
+                  dependsOn: [],
+                },
+              ],
+            },
+            "conflict",
+            { branch: task.branch },
+          );
+          await emitEvent(deps.events, deps.logger, {
+            type: "integration.conflict",
+            projectId: state.projectId,
+            featureId: state.featureId,
+            taskId: task.id,
+            payload: { files: merge.files },
+          });
+        } else if (merge.status === "merged") {
+          await emitEvent(deps.events, deps.logger, {
+            type: "integration.merged",
+            projectId: state.projectId,
+            featureId: state.featureId,
+            taskId: task.id,
+          });
+        }
+      }
+
+      const result = aggregate(outcomes);
+      return { outcome: result.outcome, failureReason: result.reason ?? null };
     })
     .addNode("verify", async (state) => {
-      if (state.outcome !== "success") {
-        return {};
+      // Tasks podem ter sido anexadas depois da última onda (absorção, M2.13).
+      const tasks = await deps.tasks.listByFeature(state.featureId);
+      if (tasks.some((task) => task.status !== "completed")) {
+        return { outcome: "continue" as const };
       }
-      const taskId = state.taskId;
-      if (!taskId || !state.worktreePath) {
-        throw new Error("feature-graph: taskId/worktreePath ausentes ao entrar em 'verify'");
-      }
-
-      const verification = await verifyTask(
+      const verification = await verifyIntegration(
         state.repoPath,
-        state.worktreePath,
+        integrationWorktreePath(state.worktreesRoot, state.featureId),
         state.defaultBranch,
+        deps.workerEnv?.(state.repoPath),
       );
-      if (!verification.passed) {
-        await deps.tasks.updateStatus(taskId, "failed");
-        return { outcome: "failure" as const, failureReason: verification.reason ?? null };
-      }
-
-      await deps.tasks.updateStatus(taskId, "completed");
-      return { outcome: "success" as const };
+      return verification.passed
+        ? { outcome: "success" as const }
+        : { outcome: "failure" as const, failureReason: verification.reason ?? null };
     })
     .addNode("complete", async (state) => {
-      // Única escrita do status terminal da Feature — a rota de cancel só
-      // sinaliza o AttemptControl, nunca escreve o status ela mesma.
+      // Única escrita do status terminal da Feature.
       const finalStatus =
         state.outcome === "success"
           ? "completed"
@@ -509,6 +286,8 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
       const payload: Record<string, unknown> = {};
       if (state.failureReason) payload.reason = state.failureReason;
       if (resetAt) payload.resumeAt = resetAt.toISOString();
+      if (finalStatus === "completed")
+        payload.integrationBranch = integrationBranchName(state.featureId);
 
       await emitEvent(deps.events, deps.logger, {
         type: `feature.${finalStatus}`,
@@ -520,35 +299,18 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
     })
     .addEdge(START, "triage")
     .addEdge("triage", "plan")
-    .addEdge("plan", "execute")
-    .addConditionalEdges("execute", (state) =>
-      state.outcome === "retry" ? "execute" : state.outcome === "success" ? "verify" : "complete",
+    .addEdge("plan", "execute_wave")
+    .addConditionalEdges("execute_wave", (state) =>
+      state.outcome === "continue"
+        ? "execute_wave"
+        : state.outcome === "integrated"
+          ? "verify"
+          : "complete",
     )
-    .addEdge("verify", "complete")
+    .addConditionalEdges("verify", (state) =>
+      state.outcome === "continue" ? "execute_wave" : "complete",
+    )
     .addEdge("complete", END);
-
-  async function persistHandover(
-    taskId: string,
-    attemptId: string,
-    attemptNumber: number,
-    worktreePath: string,
-    state: typeof FeatureGraphState.State,
-    failures: string[],
-    lastAgentMessage: string | undefined,
-  ): Promise<string> {
-    const payload = await buildHandover({
-      taskId,
-      objective: state.objective,
-      attemptNumber,
-      worktreePath,
-      defaultBranch: state.defaultBranch,
-      failures,
-      ...(lastAgentMessage !== undefined ? { lastAgentMessage } : {}),
-    });
-    const id = randomUUID();
-    await deps.handovers.create({ id, taskId, fromAttemptId: attemptId, payload });
-    return id;
-  }
 
   return graph.compile({ checkpointer });
 }

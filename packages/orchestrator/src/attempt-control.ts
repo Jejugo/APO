@@ -2,9 +2,9 @@
 // nunca pelo `signal` de nível top (achado do M1: aquele signal aborta a
 // invocação inteira do LangGraph e pula verify/complete).
 //
-// Precisa ser por attempt, não por Feature: um reroute manual (M3.10) aborta o
-// attempt atual e o graph continua num attempt novo, com outro target. Um
-// signal único por Feature já estaria abortado no attempt seguinte.
+// Um AbortController por Task em execução: no M2 várias Tasks rodam ao mesmo
+// tempo, e um reroute manual (M3.10) mira uma Task só. `cancel()` derruba
+// todas e qualquer attempt futuro desta invocação.
 
 import type { ExecutionPreference } from "@apo/domain";
 
@@ -13,27 +13,40 @@ export type AttemptAbortReason =
   | { type: "reroute"; preference: ExecutionPreference };
 
 export class AttemptControl {
-  private controller = new AbortController();
+  private readonly controllers = new Map<string, AbortController>();
   private cancelled = false;
 
-  /** Chamado pelo node 'execute' no início de cada attempt. */
-  newAttempt(): AbortSignal {
-    this.controller = new AbortController();
+  /** Chamado no início de cada attempt de uma Task. */
+  newAttempt(taskId: string): AbortSignal {
+    const controller = new AbortController();
+    this.controllers.set(taskId, controller);
     if (this.cancelled) {
-      this.controller.abort({ type: "cancel" } satisfies AttemptAbortReason);
+      controller.abort({ type: "cancel" } satisfies AttemptAbortReason);
     }
-    return this.controller.signal;
+    return controller.signal;
   }
 
-  /** Cancela a Feature: o attempt atual e qualquer attempt futuro desta invocação. */
+  attemptFinished(taskId: string): void {
+    this.controllers.delete(taskId);
+  }
+
+  isCancelled(): boolean {
+    return this.cancelled;
+  }
+
   cancel(): void {
     this.cancelled = true;
-    this.controller.abort({ type: "cancel" } satisfies AttemptAbortReason);
+    for (const controller of this.controllers.values()) {
+      controller.abort({ type: "cancel" } satisfies AttemptAbortReason);
+    }
   }
 
-  /** Interrompe só o attempt atual; o graph segue com um novo attempt no target pedido. */
-  reroute(preference: ExecutionPreference): void {
-    this.controller.abort({ type: "reroute", preference } satisfies AttemptAbortReason);
+  /** Interrompe só o attempt atual da Task. Retorna false se ela não está rodando. */
+  reroute(taskId: string, preference: ExecutionPreference): boolean {
+    const controller = this.controllers.get(taskId);
+    if (!controller) return false;
+    controller.abort({ type: "reroute", preference } satisfies AttemptAbortReason);
+    return true;
   }
 }
 

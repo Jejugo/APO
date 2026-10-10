@@ -27,6 +27,7 @@ import {
 } from "@apo/db";
 import { buildWorkerEnvironment } from "@apo/harnesses";
 import { createLogger } from "@apo/observability";
+import { WorkerSlots } from "@apo/orchestrator";
 import { DEFAULT_ROUTING_POLICY, type RoutingPolicy } from "@apo/routing";
 import { createCapacityMonitor } from "./capacity.js";
 import { FeatureRunner } from "./feature-runner.js";
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
   // exactOptionalPropertyTypes já registrada no M0 (packages/config/src/load.test.ts).
   const socketPath = expandHome(globalConfig.socketPath ?? "~/.apo/apo.sock");
   const providersConfig = GlobalConfigSchema.shape.providers.parse(globalConfig.providers ?? {});
+  const limits = globalConfig.limits;
   const routing = globalConfig.routing;
   const routingPolicy: RoutingPolicy = {
     capacityAware: routing?.capacityAware ?? DEFAULT_ROUTING_POLICY.capacityAware,
@@ -114,6 +116,10 @@ async function main(): Promise<void> {
         return buildWorkerEnvironment(projectConfig.worker?.env?.allow ?? []);
       },
       attemptLogPath: (attemptId) => join(apoHome(), "logs", "attempts", `${attemptId}.log`),
+      runsRoot: join(apoHome(), "runs"),
+      stallTimeoutMs: (limits?.stallTimeoutMinutes ?? 10) * 60_000,
+      // M2.4: compartilhado entre todas as Features do daemon.
+      slots: new WorkerSlots(limits?.maxGlobalWorkers ?? 4, limits?.maxWorkersPerProvider ?? 2),
     },
     databaseUrl,
   );

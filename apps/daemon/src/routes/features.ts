@@ -1,19 +1,26 @@
 import { randomUUID } from "node:crypto";
+import { loadRoleRegistry } from "@apo/config";
 import type { ExecutionPreference } from "@apo/domain";
 import { emitEvent } from "@apo/observability";
 import {
   AgentRunnerImpl,
   DEFAULT_TASK_TIMEOUT_MS,
+  type FeaturePlan,
+  FeaturePlanSchema,
+  appendTasks,
   candidatesOf,
+  checkFeatureOverlap,
   findTarget,
+  planFeature,
   triageIntent,
+  validatePlan,
 } from "@apo/orchestrator";
 import { resolveExecutionTarget } from "@apo/routing";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ServerDeps } from "../server-deps.js";
 
-const harnessSchema = z.enum(["claude-code", "codex", "gemini-cli", "fake"]);
+const harnessSchema = z.enum(["claude-code", "codex", "gemini-cli", "antigravity", "fake"]);
 const providerSchema = z.enum(["anthropic", "openai", "google"]);
 
 // M3: `--harness` deixou de ser obrigatório. Sem preferência, o RuleBasedRouter
@@ -24,6 +31,11 @@ const createFeatureSchema = z.object({
   as: z.enum(["question", "bugfix", "feature"]).optional(),
   harness: harnessSchema.optional(),
   prefer: harnessSchema.optional(),
+  // M2.13: segunda chamada depois de um 409 `ask_user`. O cliente devolve o
+  // plano recebido no 409 para não replanejar.
+  onOverlap: z.enum(["isolate", "absorb"]).optional(),
+  absorbInto: z.string().optional(),
+  plan: FeaturePlanSchema.optional(),
 });
 
 const preferenceSchema = z.object({
@@ -48,7 +60,47 @@ function preferenceFrom(body: { harness?: string | undefined; prefer?: string | 
   return undefined;
 }
 
+interface ProjectRef {
+  id: string;
+  repoPath: string;
+  defaultBranch: string;
+}
+
+interface FeatureRef {
+  id: string;
+  objective: string;
+  plan?: unknown;
+}
+
 export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): void {
+  function startRun(project: ProjectRef, feature: FeatureRef, label: string): void {
+    void deps.featureRunner
+      .run({
+        featureId: feature.id,
+        projectId: project.id,
+        repoPath: project.repoPath,
+        defaultBranch: project.defaultBranch,
+        objective: feature.objective,
+        worktreesRoot: deps.worktreesRoot,
+      })
+      .catch((error: unknown) => {
+        deps.logger.error({ error, featureId: feature.id }, `${label} falhou`);
+      });
+  }
+
+  /** expectedPaths de uma Feature ativa: das Tasks, ou do plano se ainda não há Tasks. */
+  async function footprintOf(feature: FeatureRef) {
+    const tasks = await deps.tasks.listByFeature(feature.id);
+    const parsed = FeaturePlanSchema.safeParse(feature.plan);
+    const paths =
+      tasks.length > 0
+        ? tasks.flatMap((task) => task.expectedPaths ?? [])
+        : parsed.success
+          ? parsed.data.tasks.flatMap((task) => task.expectedPaths)
+          : [];
+    return { featureId: feature.id, objective: feature.objective, expectedPaths: paths };
+  }
+
   app.post("/features", async (request, reply) => {
     const body = createFeatureSchema.parse(request.body);
     const project = await deps.projects.getById(body.projectId);
@@ -66,7 +118,10 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
     // preferência — senão um forced num provider esgotado barraria a criação
     // da Feature, em vez de ela ir para needs_human como o modo forced pede.
     const leadTarget = resolveExecutionTarget({
-      candidates: candidatesOf(deps.targets),
+      // O Lead depende de saída estruturada; targets sem isso (agy) ficam de fora.
+      candidates: candidatesOf(
+        deps.targets.filter((entry) => entry.harness.getCapabilities().supportsOutputSchema),
+      ),
       capacity: (provider) => deps.capacity.get(provider),
       featurePreference: preference ? { ...preference, mode: "preferred" } : null,
       policy: deps.routingPolicy,
@@ -127,30 +182,114 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       return { intent: "question" as const, answer: result.output.answer };
     }
 
+    const intent = triage.intent;
+
+    // M2.5: o Lead planeja o DAG antes de a Feature existir — os expectedPaths
+    // do plano alimentam o FeatureOverlapCheck.
+    let plan: FeaturePlan;
+    let planFallbackReason: string | undefined;
+    if (body.plan && validatePlan(body.plan).ok) {
+      plan = body.plan;
+    } else {
+      const planned = await planFeature(
+        agentRunner,
+        {
+          objective: body.objective,
+          intent,
+          roleIds: [...loadRoleRegistry(project.repoPath).keys()],
+          cwd: project.repoPath,
+          timeoutMs: DEFAULT_TASK_TIMEOUT_MS,
+        },
+        controller.signal,
+      );
+      plan = planned.plan;
+      planFallbackReason = planned.reason;
+    }
+
+    // M2.12/M2.13: sobreposição com Feature ativa → pergunta ao usuário (409).
+    // `--on-overlap absorb` sem alvo (CLI não interativa) também precisa da
+    // verificação, para descobrir em qual Feature absorver.
+    let absorbInto = body.absorbInto;
+    if (body.onOverlap === undefined || (body.onOverlap === "absorb" && !absorbInto)) {
+      const active = await deps.features.listActiveByProject(project.id);
+      const overlap = await checkFeatureOverlap(
+        {
+          objective: body.objective,
+          expectedPaths: plan.tasks.flatMap((task) => task.expectedPaths),
+          active: await Promise.all(active.map(footprintOf)),
+          runner: agentRunner,
+          cwd: project.repoPath,
+          timeoutMs: DEFAULT_TASK_TIMEOUT_MS,
+        },
+        controller.signal,
+      );
+      if (overlap.decision === "ask_user") {
+        if (body.onOverlap === undefined) {
+          reply.code(409);
+          return { ...overlap, intent, plan };
+        }
+        absorbInto = overlap.overlappingFeatureId;
+      }
+    }
+
+    // Absorver sem nenhuma Feature sobreposta cai no fluxo normal (Feature nova).
+    if (body.onOverlap === "absorb" && absorbInto) {
+      const target = await deps.features.getById(absorbInto);
+      const stillActive =
+        target &&
+        (await deps.features.listActiveByProject(project.id)).some((f) => f.id === target.id);
+      if (!target || !stillActive) {
+        reply.code(409);
+        return {
+          error:
+            "a Feature a absorver o pedido não está mais ativa; rode de novo para criar uma Feature nova",
+        };
+      }
+      const taskIds = await appendTasks(
+        deps.tasks,
+        target.id,
+        {
+          tasks: plan.tasks.map((task) => ({
+            ...task,
+            description: `Pedido original (absorvido nesta Feature): ${body.objective}\n\n${task.description}`,
+          })),
+        },
+        "overlap_absorbed",
+      );
+      await emitEvent(deps.events, deps.logger, {
+        type: "feature.request_absorbed",
+        projectId: project.id,
+        featureId: target.id,
+        payload: { originalObjective: body.objective, intoFeatureId: target.id, taskIds },
+      });
+      if (!deps.featureRunner.isRunning(target.id)) {
+        startRun(project, target, "feature run (absorção)");
+      }
+      return { absorbedInto: target.id, taskIds };
+    }
+
     const feature = await deps.features.create({
       id: randomUUID(),
       projectId: project.id,
       objective: body.objective,
-      intent: triage.intent,
+      intent,
+      plan,
       ...(preference ? { executionPreference: preference } : {}),
     });
     if (!feature) {
       reply.code(500);
       return { error: "falha ao criar feature" };
     }
-
-    void deps.featureRunner
-      .run({
-        featureId: feature.id,
+    if (planFallbackReason) {
+      await emitEvent(deps.events, deps.logger, {
+        type: "feature.plan_fallback",
         projectId: project.id,
-        repoPath: project.repoPath,
-        defaultBranch: project.defaultBranch,
-        objective: body.objective,
-        worktreesRoot: deps.worktreesRoot,
-      })
-      .catch((error: unknown) => {
-        deps.logger.error({ error, featureId: feature.id }, "feature run falhou");
+        featureId: feature.id,
+        payload: { reason: planFallbackReason },
       });
+    }
+
+    startRun(project, feature, "feature run");
 
     reply.code(201);
     return feature;
@@ -237,18 +376,7 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
     await emitEvent(deps.events, deps.logger, { type: "feature.resumed", featureId: id });
 
     if (!deps.featureRunner.isRunning(id)) {
-      void deps.featureRunner
-        .run({
-          featureId: id,
-          projectId: project.id,
-          repoPath: project.repoPath,
-          defaultBranch: project.defaultBranch,
-          objective: feature.objective,
-          worktreesRoot: deps.worktreesRoot,
-        })
-        .catch((error: unknown) => {
-          deps.logger.error({ error, featureId: id }, "feature resume falhou");
-        });
+      startRun(project, feature, "feature resume");
     }
 
     return deps.features.getById(id);

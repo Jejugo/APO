@@ -52,6 +52,9 @@ export function buildCodexArgs(input: AgentExecutionInput, options: CodexArgsOpt
   if (options.outputSchemaPath) {
     args.push("--output-schema", options.outputSchemaPath);
   }
+  for (const dir of input.extraWritableDirs ?? []) {
+    args.push("--add-dir", dir);
+  }
 
   return args;
 }

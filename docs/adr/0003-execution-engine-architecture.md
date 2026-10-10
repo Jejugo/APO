@@ -1,6 +1,6 @@
 # ADR 0003 — APO como control plane sobre execution engines
 
-**Status:** proposto (não aceito). Vira "aceito" ou é revisto quando o triage de engines externos rodar, no início do M2.
+**Status:** **aceito** em 2026-10-10, depois do triage do M2.0 (seção "Resultado do triage" no fim deste documento).
 **Contexto:** pós-M1. Revisão da premissa de que o APO constrói internamente todo o runtime multi-agente.
 
 ## Contexto
@@ -76,6 +76,20 @@ Todos os itens abaixo, confirmados empiricamente:
 
 - **O contrato de `ExecutionEngine` não é implementado agora.** Com um engine só, a interface seria abstração sem uso real (regra 3 do PLAN.md). Ela nasce quando o segundo engine (`ApoNativeEngine` ou um externo) for implementado.
 
-## Próximo passo de revisão
+## Resultado do triage (M2.0, 2026-10-10)
+
+Relatórios em `spikes/execution-engines/` (resumo em `comparison.md`).
+
+- **Claude Code Agent Teams:** funciona em headless (`claude -p`). Dois agentes em paralelo e mensagem direta entre eles foram confirmados empiricamente, por ~US$ 0,42. Mas é paralelismo dentro de um provider só, sem worktree por agente e sem estado observável de fora. O `--bg` exige aceitar "workspace trust" de forma interativa em diretório novo.
+- **Multi-agente nativo do Codex:** não testado empiricamente (Codex sem quota). Pelo `codex features list`, o `multi_agent` está estável, e a troca de mensagens (`agent_message_board`) está em desenvolvimento. O plugin `codex-teams` não foi instalado (risco de terceiro).
+- **Antigravity Teamwork:** funciona em headless (`agy -p '/teamwork-preview …'`), e o estado do time fica em arquivos. Porém exige `--dangerously-skip-permissions`, grava `.agents/` dentro do repo e levou ~10,5 min e ~205 mil tokens de entrada para uma tarefa trivial.
+- **AgentScope:** só referência (framework, não runtime).
+
+**Decisões, confirmadas com o usuário:**
+1. Nenhum engine externo entra na V1. O paralelismo de Claude e Codex dentro do próprio provider já cabe no `SingleAgentEngine`. O Antigravity Teamwork fica como referência e candidato futuro para trabalhos grandes.
+2. O `ApoNativeEngine` (M2) continua, sem a mensageria: mailbox e perguntas bloqueantes (M2.18–M2.21) ficam adiadas até um caso real. Entre Tasks de providers diferentes, os artefatos tipados via DAG (M2.9) cobrem a passagem de informação.
+3. **Novo:** `AntigravityHarness` (`agy -p`, single-agent) como terceiro provider. A conta Google do usuário funciona no `agy` e dá acesso a modelos Gemini, que o Gemini CLI tinha recusado no M0.
+
+## Próximo passo de revisão (histórico)
 
 Primeiro item do M2: triage de 1–2 horas (feito pelo agente, não pelo usuário) com uma pergunta por candidato: "dá para disparar, acompanhar e cancelar via CLI, sem terminal interativo?". Ordem: Claude Code Agent Teams, multi-agente nativo do Codex (antes do `codex-teams`), Antigravity Teamwork. AgentScope fica só como leitura. Quem falhar sai da lista. Só quem passar recebe o benchmark completo (feature full-stack, comunicação entre agents, alterações paralelas, falha de worker, restart, intervenção humana). Com o resultado, este ADR muda para "aceito" ou é revisto.

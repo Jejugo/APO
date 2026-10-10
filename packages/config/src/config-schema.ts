@@ -12,6 +12,8 @@ export const RoutingConfigSchema = z.object({
 export const LimitsConfigSchema = z.object({
   maxGlobalWorkers: z.number().int().positive().default(4),
   maxWorkersPerProvider: z.number().int().positive().default(2),
+  /** M2.3: worker sem saída e sem escrita em disco por esse tempo é morto como `stalled`. */
+  stallTimeoutMinutes: z.number().int().positive().default(10),
 });
 
 // Targets disponíveis para o roteamento (M3.2, `ProviderRegistry`). Um target
@@ -19,18 +21,36 @@ export const LimitsConfigSchema = z.object({
 // `--harness`, `apo providers` e `routing_decisions`.
 export const ProviderTargetSchema = z.object({
   id: z.string().min(1),
-  harness: z.enum(["claude-code", "codex", "gemini-cli", "fake"]),
+  harness: z.enum(["claude-code", "codex", "gemini-cli", "antigravity", "fake"]),
   provider: z.enum(["anthropic", "openai", "google"]),
   model: z.string().optional(),
   enabled: z.boolean().default(true),
+  /**
+   * Só `antigravity`: libera comandos de shell no worker (testes, install, git)
+   * via `--dangerously-skip-permissions`. Sem confinamento de disco — o worker
+   * pode escrever fora da worktree (spikes/antigravity.md). Default: desligado.
+   */
+  dangerouslySkipPermissions: z.boolean().default(false),
 });
 
 export type ProviderTarget = z.infer<typeof ProviderTargetSchema>;
 
 // Gemini fica fora do default: bloqueado na autenticação (spikes/gemini.md).
 export const DEFAULT_PROVIDER_TARGETS: ProviderTarget[] = [
-  { id: "claude-code", harness: "claude-code", provider: "anthropic", enabled: true },
-  { id: "codex", harness: "codex", provider: "openai", enabled: true },
+  {
+    id: "claude-code",
+    harness: "claude-code",
+    provider: "anthropic",
+    enabled: true,
+    dangerouslySkipPermissions: false,
+  },
+  {
+    id: "codex",
+    harness: "codex",
+    provider: "openai",
+    enabled: true,
+    dangerouslySkipPermissions: false,
+  },
 ];
 
 export const ProvidersConfigSchema = z.object({

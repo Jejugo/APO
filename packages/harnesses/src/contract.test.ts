@@ -1,5 +1,6 @@
 // Suíte de contrato (M1.5): os mesmos cenários — sucesso, falha, timeout,
-// cancelamento, saída estruturada — para os três harnesses de M1.4.
+// cancelamento, saída estruturada — para os harnesses de M1.4 e o
+// AntigravityHarness (M2.23).
 //
 // FakeHarness roda sempre (grátis, determinístico). ClaudeCodeHarness e
 // CodexHarness só rodam com APO_LIVE_HARNESS_TESTS=1 (custo real de API,
@@ -12,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AntigravityHarness } from "./antigravity/harness.js";
 import { ClaudeCodeHarness } from "./claude-code/harness.js";
 import { CodexHarness } from "./codex/harness.js";
 import { FakeHarness } from "./fake/fake-harness.js";
@@ -192,6 +194,56 @@ describe.skipIf(!LIVE)("CodexHarness — contrato (ao vivo, custo real de API)",
       baseInput(cwd, {
         mode: "read-only",
         prompt: "escreva um ensaio de 2000 palavras sobre história do café",
+      }),
+      controller.signal,
+    );
+    expect(result.outcome).toBe("failure");
+    expect(result.failure?.kind).toBe("cancelled");
+  }, 30_000);
+});
+
+// M2.23 — sem saída estruturada (spikes/antigravity.md): o "sucesso" do
+// contrato é editar um arquivo, que é o único uso previsto (worker).
+describe.skipIf(!LIVE)("AntigravityHarness — contrato (ao vivo, custo real de API)", () => {
+  const harness: AgentHarness = new AntigravityHarness();
+
+  it("sucesso: edita um arquivo no cwd e devolve sessionId", async () => {
+    const result = await harness.execute(
+      baseInput(cwd, {
+        prompt: "crie o arquivo hello.txt contendo apenas: oi",
+        timeoutMs: 120_000,
+      }),
+      new AbortController().signal,
+    );
+    expect(result.outcome).toBe("success");
+    expect(result.sessionId).toBeDefined();
+    const status = await execa("git", ["status", "--porcelain"], { cwd });
+    expect(status.stdout).toContain("hello.txt");
+  }, 150_000);
+
+  it("saída estruturada pedida → invalid_output sem chamar o CLI", async () => {
+    const result = await harness.execute(
+      baseInput(cwd, { outputSchema: { type: "object" } }),
+      new AbortController().signal,
+    );
+    expect(result.failure?.kind).toBe("invalid_output");
+  });
+
+  it("falha: modelo inexistente retorna failure estruturada", async () => {
+    const result = await harness.execute(
+      baseInput(cwd, { model: "modelo-que-nao-existe-xyz" }),
+      new AbortController().signal,
+    );
+    expect(result.outcome).toBe("failure");
+    expect(result.failure?.message).toContain("invalid model selection");
+  }, 30_000);
+
+  it("cancelamento: AbortSignal interrompe a execução real", async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 1_500);
+    const result = await harness.execute(
+      baseInput(cwd, {
+        prompt: "escreva um ensaio de 2000 palavras sobre história do café em ensaio.md",
       }),
       controller.signal,
     );

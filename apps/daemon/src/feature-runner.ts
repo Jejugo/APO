@@ -1,4 +1,4 @@
-// Ciclo de vida de uma Feature no SingleAgentEngine: rodar, cancelar
+// Ciclo de vida de uma Feature no ApoNativeEngine: rodar, cancelar
 // (M1.16), reroute manual (M3.10) e retomar depois de um restart (M1.13) ou
 // de uma pausa por capacidade (M3.9).
 //
@@ -60,12 +60,12 @@ export class FeatureRunner {
     return true;
   }
 
-  /** M3.10: interrompe o attempt atual; o graph continua no target pedido. */
-  reroute(featureId: string, preference: ExecutionPreference): boolean {
-    const control = this.controls.get(featureId);
-    if (!control) return false;
-    control.reroute(preference);
-    return true;
+  /**
+   * M3.10: interrompe o attempt atual da Task; ela continua no target pedido.
+   * `false` = a Task não tem attempt rodando agora (o chamador grava o override).
+   */
+  reroute(featureId: string, taskId: string, preference: ExecutionPreference): boolean {
+    return this.controls.get(featureId)?.reroute(taskId, preference) ?? false;
   }
 
   isRunning(featureId: string): boolean {

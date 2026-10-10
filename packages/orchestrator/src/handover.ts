@@ -32,16 +32,21 @@ export interface BuildHandoverInput {
   objective: string;
   attemptNumber: number;
   worktreePath: string;
-  defaultBranch: string;
+  /** Base do diff: a branch de integração (M2) — o que a Task acrescentou. */
+  baseRef: string;
   failures: string[];
   lastAgentMessage?: string;
+  /** Commitar o estado antes do handover. Falso para Tasks em worktree compartilhada. */
+  commitWip?: boolean;
 }
 
 export async function buildHandover(input: BuildHandoverInput): Promise<TaskHandoverPayload> {
   // Antes de qualquer handover, nada pode se perder (seção 6.4).
-  await commitIfDirty(input.worktreePath, `apo: wip handover (attempt ${input.attemptNumber})`);
+  if (input.commitWip !== false) {
+    await commitIfDirty(input.worktreePath, `apo: wip handover (attempt ${input.attemptNumber})`);
+  }
 
-  const range = `${input.defaultBranch}..HEAD`;
+  const range = `${input.baseRef}..HEAD`;
   const [names, stat, diff] = await Promise.all([
     git(input.worktreePath, ["diff", "--name-only", range]),
     git(input.worktreePath, ["diff", "--stat", range]),

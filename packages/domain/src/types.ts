@@ -6,7 +6,7 @@
 // usa começar, não antes.
 
 export type ProviderId = "anthropic" | "openai" | "google";
-export type HarnessId = "claude-code" | "codex" | "gemini-cli" | "fake";
+export type HarnessId = "claude-code" | "codex" | "gemini-cli" | "antigravity" | "fake";
 
 // --- Feature -----------------------------------------------------------
 

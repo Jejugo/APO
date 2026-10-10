@@ -132,6 +132,26 @@ describe("resolveExecutionTarget — matriz forced/preferred/auto × disponibili
     expect(result.kind === "target" && result.resolutionSource).toBe("task_override");
   });
 
+  it("Role preference vale quando Task e Feature não definem nada", () => {
+    const result = resolveExecutionTarget({
+      candidates: CANDIDATES,
+      capacity: capacity({}),
+      rolePreference: { mode: "preferred", harness: "codex" },
+    });
+    expect(result.kind === "target" && result.target.targetId).toBe("codex");
+    expect(result.kind === "target" && result.resolutionSource).toBe("role_preference");
+  });
+
+  it("Feature override vence Role preference", () => {
+    const result = resolveExecutionTarget({
+      candidates: CANDIDATES,
+      capacity: capacity({}),
+      featurePreference: { mode: "forced", harness: "claude-code" },
+      rolePreference: { mode: "forced", harness: "codex" },
+    });
+    expect(result.kind === "target" && result.target.targetId).toBe("claude-code");
+  });
+
   it("forced nunca troca de provider, mesmo com exclude", () => {
     const result = resolveExecutionTarget({
       candidates: CANDIDATES,

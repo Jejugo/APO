@@ -4,11 +4,12 @@
 // - stdin fechado (os dois CLIs travam esperando EOF sem isso — spikes M0.9/M0.10);
 // - environment **só** com o que veio em `env` (`extendEnv: false`), nunca o
 //   `process.env` do daemon (M3.0b, seção 6.3 do TECHNICAL_PLAN.md);
-// - log por attempt em `logPath` (stdout + stderr), para depurar depois.
-//
-// Detecção de `stalled` (sem saída nem mudança em disco por N minutos) fica
-// para o `ProcessSupervisor` completo do M2.
+// - log por attempt em `logPath` (stdout + stderr), para depurar depois;
+// - `stalled` (M2.3): sem saída e sem mudança em disco (cwd + `activityPaths`)
+//   por `stallTimeoutMs` → mata a árvore. Na dúvida, prefere não detectar
+//   (falso negativo cai no timeout duro; falso positivo mataria trabalho bom).
 
+import { type FSWatcher, existsSync, watch } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { execa } from "execa";
@@ -21,6 +22,10 @@ export interface SupervisedProcessInput {
   timeoutMs: number;
   signal: AbortSignal;
   logPath: string;
+  /** Sem atividade por esse tempo → `stalled`. Ausente = desligado. */
+  stallTimeoutMs?: number;
+  /** Diretórios além do `cwd` cuja escrita conta como atividade. */
+  activityPaths?: string[];
 }
 
 export interface SupervisedProcessResult {
@@ -30,31 +35,86 @@ export interface SupervisedProcessResult {
   failed: boolean;
   timedOut: boolean;
   canceled: boolean;
+  stalled: boolean;
+}
+
+/** Vigia stdout/stderr e escrita em disco; aborta `stall` sem atividade. */
+function startStallWatch(
+  input: SupervisedProcessInput,
+  stall: AbortController,
+): { touch: () => void; stop: () => void } {
+  const stallTimeoutMs = input.stallTimeoutMs;
+  if (!stallTimeoutMs) return { touch: () => {}, stop: () => {} };
+
+  let lastActivity = Date.now();
+  const touch = () => {
+    lastActivity = Date.now();
+  };
+  const watchers: FSWatcher[] = [];
+  for (const path of [input.cwd, ...(input.activityPaths ?? [])]) {
+    if (!existsSync(path)) continue;
+    try {
+      const watcher = watch(path, { recursive: true }, touch);
+      watcher.on("error", () => {});
+      watchers.push(watcher);
+    } catch {
+      // Sem watch nesse caminho: só o stdout conta.
+    }
+  }
+  const timer = setInterval(
+    () => {
+      if (Date.now() - lastActivity >= stallTimeoutMs) stall.abort();
+    },
+    Math.min(30_000, Math.max(50, Math.floor(stallTimeoutMs / 4))),
+  );
+  timer.unref();
+  return {
+    touch,
+    stop: () => {
+      clearInterval(timer);
+      for (const watcher of watchers) watcher.close();
+    },
+  };
 }
 
 export async function runSupervisedProcess(
   input: SupervisedProcessInput,
 ): Promise<SupervisedProcessResult> {
-  const result = await execa(input.file, input.args, {
+  const stall = new AbortController();
+  const watch = startStallWatch(input, stall);
+
+  const subprocess = execa(input.file, input.args, {
     cwd: input.cwd,
     env: input.env,
     extendEnv: false,
     stdin: "ignore",
     timeout: input.timeoutMs,
-    cancelSignal: input.signal,
+    cancelSignal: AbortSignal.any([input.signal, stall.signal]),
     killDescendants: true,
     reject: false,
   });
+  subprocess.stdout?.on("data", watch.touch);
+  subprocess.stderr?.on("data", watch.touch);
+
+  let result: Awaited<typeof subprocess>;
+  try {
+    result = await subprocess;
+  } finally {
+    watch.stop();
+  }
 
   await writeAttemptLog(input, result.stdout, result.stderr, result.exitCode);
 
+  // Cancelamento externo tem prioridade: quem pediu decide o rumo.
+  const stalled = stall.signal.aborted && !input.signal.aborted;
   return {
     stdout: result.stdout,
     stderr: result.stderr,
     exitCode: result.exitCode,
     failed: result.failed,
     timedOut: result.timedOut,
-    canceled: result.isCanceled,
+    canceled: result.isCanceled && !stalled,
+    stalled,
   };
 }
 

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { loadRoleRegistry } from "@apo/config";
 import { emitEvent } from "@apo/observability";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -50,5 +51,21 @@ export function registerProjectRoutes(app: FastifyInstance, deps: ServerDeps): v
       return { error: "project não encontrado" };
     }
     return project;
+  });
+
+  // M2.17 — roles resolvidos: embutidos + overrides de <repo>/.apo/roles/*.yaml.
+  app.get("/projects/:id/roles", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const project = await deps.projects.getById(id);
+    if (!project) {
+      reply.code(404);
+      return { error: "project não encontrado" };
+    }
+    try {
+      return [...loadRoleRegistry(project.repoPath).values()];
+    } catch (error) {
+      reply.code(422);
+      return { error: `role inválido em .apo/roles: ${(error as Error).message}` };
+    }
   });
 }

@@ -4,7 +4,12 @@
 // (regra 4 do PLAN.md).
 
 import type { ProviderTarget } from "@apo/config";
-import { type AgentHarness, ClaudeCodeHarness, CodexHarness } from "@apo/harnesses";
+import {
+  type AgentHarness,
+  AntigravityHarness,
+  ClaudeCodeHarness,
+  CodexHarness,
+} from "@apo/harnesses";
 import type { Logger } from "@apo/observability";
 import type { TargetRegistry } from "@apo/orchestrator";
 
@@ -14,6 +19,11 @@ function harnessFor(target: ProviderTarget): AgentHarness | undefined {
       return new ClaudeCodeHarness();
     case "codex":
       return new CodexHarness();
+    case "antigravity":
+      // Opt-in; sem a flag, só edita arquivos (spikes/antigravity.md).
+      return new AntigravityHarness({
+        dangerouslySkipPermissions: target.dangerouslySkipPermissions ?? false,
+      });
     default:
       // gemini-cli: bloqueado na autenticação (spikes/gemini.md).
       // fake: só existe em testes, nunca no daemon.
@@ -32,6 +42,14 @@ export function buildTargetRegistry(targets: ProviderTarget[], logger: Logger): 
         "target ignorado: harness sem implementação disponível",
       );
       continue;
+    }
+    if (target.dangerouslySkipPermissions) {
+      logger.warn(
+        { target: target.id, harness: target.harness },
+        target.harness === "antigravity"
+          ? "dangerouslySkipPermissions ligado: o worker roda comandos sem confinamento de disco"
+          : "dangerouslySkipPermissions só vale para antigravity — ignorado neste target",
+      );
     }
     registry.push({
       candidate: {

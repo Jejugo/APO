@@ -50,7 +50,13 @@ export const taskStatusEnum = pgEnum("task_status", [
 ]);
 
 export const providerEnum = pgEnum("provider", ["anthropic", "openai", "google"]);
-export const harnessEnum = pgEnum("harness", ["claude-code", "codex", "gemini-cli", "fake"]);
+export const harnessEnum = pgEnum("harness", [
+  "claude-code",
+  "codex",
+  "gemini-cli",
+  "antigravity",
+  "fake",
+]);
 
 export const taskAttemptStatusEnum = pgEnum("task_attempt_status", [
   "starting",
@@ -109,6 +115,9 @@ export const features = pgTable("features", {
   // se o daemon cair antes do node 'plan' criar a Task, a recovery (M1.13)
   // ainda precisa saber qual harness retomar com.
   executionPreference: jsonb("execution_preference"),
+  /** Plano (DAG) gerado antes da criação — o FeatureOverlapCheck precisa dos
+   * expectedPaths antes de a Feature existir (M2.5/M2.12). */
+  plan: jsonb("plan"),
   integrationBranch: text("integration_branch"),
   fixIteration: integer("fix_iteration").notNull().default(0),
   prUrl: text("pr_url"),
@@ -126,11 +135,24 @@ export const tasks = pgTable("tasks", {
   kind: taskKindEnum("kind").notNull(),
   status: taskStatusEnum("status").notNull().default("pending"),
   dependencies: text("dependencies").array().notNull().default([]),
-  // Override manual via `--harness` (seção 14.1 do PLAN.md, ExecutionPreference
-  // serializado). A hierarquia completa (Feature override → Role preference →
-  // router) só chega no M2/M3 — em M1 isso é lido e repassado direto, sem
-  // ExecutionTargetResolver.
+  /** Ordem estável dentro da Feature (t1, t2…) — usada no nome da branch. */
+  seq: integer("seq").notNull().default(1),
+  // Override da Task (seção 14.1 do PLAN.md): vence Feature override e Role preference.
   executionPreference: jsonb("execution_preference"),
+  /** Id do RoleDefinition (M2.15). */
+  role: text("role"),
+  /** Estimativa do planner (M2.5) — base do FeatureOverlapCheck (M2.12). */
+  expectedPaths: text("expected_paths").array(),
+  /** O que de fato mudou (git diff), calculado pelo APO, não auto-relatado. */
+  actualChangedPaths: text("actual_changed_paths").array(),
+  /** `WorkerReport.artifacts` (M2.9), injetado nas Tasks dependentes. */
+  artifacts: jsonb("artifacts"),
+  /** Resumo do `WorkerReport`, também repassado às dependentes. */
+  summary: text("summary"),
+  /** plan | conflict | overlap_absorbed (seção 5.1). */
+  origin: text("origin").notNull().default("plan"),
+  /** isolated | shared | integration (M2.2). */
+  workspaceMode: text("workspace_mode"),
   worktreePath: text("worktree_path"),
   branch: text("branch"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

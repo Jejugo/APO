@@ -14,6 +14,18 @@ export class DaemonUnavailableError extends Error {
   }
 }
 
+/** Resposta não-2xx do daemon, com o corpo já parseado quando é JSON. */
+export class DaemonHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+    text: string,
+  ) {
+    super(`daemon respondeu ${status}: ${text}`);
+    this.name = "DaemonHttpError";
+  }
+}
+
 export interface DaemonRequestOptions {
   method?: "GET" | "POST" | "DELETE";
   body?: unknown;
@@ -43,7 +55,13 @@ export function daemonRequest<T>(path: string, options: DaemonRequestOptions = {
           if (status >= 200 && status < 300) {
             resolve(text.length > 0 ? (JSON.parse(text) as T) : (undefined as T));
           } else {
-            reject(new Error(`daemon respondeu ${status}: ${text}`));
+            let body: unknown;
+            try {
+              body = JSON.parse(text);
+            } catch {
+              body = undefined;
+            }
+            reject(new DaemonHttpError(status, body, text));
           }
         });
       },

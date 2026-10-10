@@ -1,0 +1,1 @@
+ALTER TYPE "public"."harness" ADD VALUE 'antigravity' BEFORE 'fake';

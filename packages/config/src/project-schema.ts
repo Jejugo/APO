@@ -26,6 +26,9 @@ export const ProjectConfigSchema = z.object({
   workspace: z
     .object({
       defaultMode: WorkspaceModeSchema.default("auto"),
+      // Rodado em cada worktree nova (Task e integração) antes do trabalho e
+      // dos testes — ex.: "pnpm install". Worktrees não herdam node_modules.
+      prepare: z.string().optional(),
     })
     .default({}),
   // Variáveis extras que o worker pode enxergar, além da allowlist base

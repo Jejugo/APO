@@ -33,6 +33,10 @@ export function buildClaudeCodeArgs(
   if (resumeSessionId) {
     args.push("--resume", resumeSessionId);
   }
+  // Por último: `--add-dir` é variádico no Claude Code e engoliria flags seguintes.
+  if (input.extraWritableDirs && input.extraWritableDirs.length > 0) {
+    args.push("--add-dir", ...input.extraWritableDirs);
+  }
 
   return args;
 }

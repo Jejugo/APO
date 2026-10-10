@@ -622,7 +622,7 @@ Com ele, failover, recovery, paralelismo, conflitos de merge e loops de review s
 
 Convenção: cada fase lista **entregas** (numeradas, cada uma do tamanho de um commit ou PR), **testes obrigatórios** e o **gate de saída**. As estimativas estão em semanas de um dev com agentes e somam o intervalo do ROADMAP.md.
 
-**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → **M2** → M4 → M5 → M6. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
+**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → **M4** → M5 → M6. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
 
 | Entrega | De | Para | Motivo |
 |---|---|---|---|
@@ -737,7 +737,9 @@ Cada spike é um script em `spikes/<cli>/run.ts` que roda contra uma cópia do `
 
 ### M2 — Worktrees, workers, paralelismo e política de workspace
 
-> ⏸ **Congelado (ADR 0003). Roda depois do M3.** Ao descongelar, a entrega **M2.0** vem antes de todas as outras: triage de engines externos (1–2 horas, feito pelo agente). Para cada candidato — Claude Code Agent Teams, multi-agente nativo do Codex, Antigravity Teamwork — a pergunta é uma só: "dá para disparar, acompanhar e cancelar via CLI, sem terminal interativo?". O resultado define se o ADR 0003 passa a "aceito" e se o escopo abaixo encolhe, sobretudo M2.18–M2.21 (mensageria e perguntas bloqueantes). M2.3 e M2.22 já foram puxadas para o M3.
+> **M2.0 (triage) ✅ — escopo ajustado.** Resultado em `spikes/execution-engines/comparison.md`; ADR 0003 aceito. Nenhum engine externo entra na V1. **M2.18–M2.21 (mensageria e perguntas bloqueantes) estão adiadas** até um caso real exigir: os artefatos tipados (M2.9) cobrem a passagem de informação entre Tasks. **Entra M2.23, `AntigravityHarness`.** M2.3 (mínimo) e M2.22 já foram entregues no M3; do M2.3 resta só a detecção de `stalled`.
+>
+> **M2 ✅ (2026-10-10).** ApoNativeEngine em ondas sobre o failover do M3. Detecção de `stalled` entregue (stdout/stderr + escrita em disco; no Claude Code, o transcript da sessão conta como sinal de vida). Gate abaixo com evidências.
 
 **Objetivo:** uma Feature vira um DAG de Tasks executado em paralelo, em worktrees isoladas, e integrado numa branch. Features distintas e sem relação rodam ao mesmo tempo sem colidir; Features que colidem sempre perguntam ao usuário antes de isolar ou absorver. Cada Task carrega um role, que injeta identidade e convenções no prompt do worker que a executa, e pode trocar mensagens assíncronas com outras roles ou perguntas bloqueantes com o Lead.
 **Estimativa:** 2,5 a 4 semanas (cresceu com o `FeatureOverlapCheck`, `RoleRegistry`/`PromptBuilder`, mensageria e sanitização de environment).
@@ -763,12 +765,13 @@ Cada spike é um script em `spikes/<cli>/run.ts` que roda contra uma cópia do `
 | M2.15 | `RoleRegistry` | Carrega `default-roles/` embutidos, sobrepõe com `<repo>/.apo/roles/*.yaml` por id, valida com zod. Role desconhecido no plano → fallback `generic` + evento `task.unknown_role` |
 | M2.16 | `PromptBuilder` | Monta o prompt do worker na ordem fixa da seção 6.7: `Role.systemPrompt` → contrato padrão do worker → contexto da Task. Usado pelo `WorkerManager` (M2.4) |
 | M2.17 | `apo role list` / `apo role show <id>` | Lista os roles resolvidos (embutidos + overrides do Project) e mostra o `systemPrompt` e a `executionPreference` efetivos de um id |
-| M2.18 | `packages/messaging`: `MessageBus`, `MessageRepository`, `AgentInbox` | Tabelas `agent_messages` e `message_deliveries` (tipos `information`/`question` nesta fase). `AgentInbox.pendingFor(role, task)` consultado pelo `PromptBuilder` (M2.16) ao montar o prompt de um worker novo — broadcast por (Feature, role), FIFO, com teto `messageCapPerRole` (seção 6.9) |
-| M2.18b | `messages.undelivered` | Hook no `transition()` (M0.4): ao entrar em status terminal, varre `agent_messages` sem linha em `message_deliveries` e emite o evento por mensagem |
-| M2.19 | Pergunta bloqueante ao agente persistente | `WorkerReport.blockedQuestion` → Task `awaiting_answer` → `AgentRunner.run("lead", …)` responde usando requirements + artefatos da Feature. Confiança baixa (sem `questionPolicy` ainda — isso é M3) → `needs_human` |
-| M2.20 | Resume pós-resposta | Task retomada preferindo `harness.resume(sessionId)` nativo; sem isso, nova attempt com a pergunta+resposta injetada no contexto (mesmo envelope do `TaskHandover`, seção 6.4) |
-| M2.21 | `apo task answer <id> "resposta"` | Persiste a resposta humana em `agent_messages.answer`, Task `awaiting_answer`/`needs_human` → nova attempt |
-| M2.22 | `buildWorkerEnvironment()` | `ProcessSupervisor` (M2.3) passa só a allowlist (seção 6.3) ao processo filho — nunca `process.env` inteiro |
+| M2.18 | `packages/messaging`: `MessageBus`, `MessageRepository`, `AgentInbox` | **Adiado (triage M2.0).** Tabelas `agent_messages` e `message_deliveries` (tipos `information`/`question` nesta fase). `AgentInbox.pendingFor(role, task)` consultado pelo `PromptBuilder` (M2.16) ao montar o prompt de um worker novo — broadcast por (Feature, role), FIFO, com teto `messageCapPerRole` (seção 6.9) |
+| M2.18b | `messages.undelivered` | **Adiado (triage M2.0).** Hook no `transition()` (M0.4): ao entrar em status terminal, varre `agent_messages` sem linha em `message_deliveries` e emite o evento por mensagem |
+| M2.19 | Pergunta bloqueante ao agente persistente | **Adiado (triage M2.0).** `WorkerReport.blockedQuestion` → Task `awaiting_answer` → `AgentRunner.run("lead", …)` responde usando requirements + artefatos da Feature. Confiança baixa (sem `questionPolicy` ainda — isso é M3) → `needs_human` |
+| M2.20 | Resume pós-resposta | **Adiado (triage M2.0).** Task retomada preferindo `harness.resume(sessionId)` nativo; sem isso, nova attempt com a pergunta+resposta injetada no contexto (mesmo envelope do `TaskHandover`, seção 6.4) |
+| M2.21 | `apo task answer <id> "resposta"` | **Adiado (triage M2.0).** Persiste a resposta humana em `agent_messages.answer`, Task `awaiting_answer`/`needs_human` → nova attempt |
+| M2.22 | `buildWorkerEnvironment()` | ✅ entregue no M3 (M3.0b) |
+| M2.23 | `AntigravityHarness` | `agy -p` como harness single-agent (provider `google`, modelos Gemini via conta Google). Passa pelo protocolo de spike do M0 (headless, saída estruturada, read-only real, escrita restrita, cancelamento, erros) e pela suíte de contrato do M1.5. Substitui o `GeminiCliHarness` bloqueado (M3.1) |
 
 #### Limitação conhecida: barreira de onda
 
@@ -796,20 +799,26 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 #### Gate de saída
 
-- [ ] 3 Tasks rodam ao mesmo tempo, cada uma na sua worktree (verificado pelos timestamps dos attempts).
-- [ ] A Task dependente enxerga o código das dependências.
-- [ ] Um conflito real é resolvido por Task corretiva.
-- [ ] Uma Task `read` roda em `shared` sem criar worktree.
-- [ ] `apo task show` mostra worktree, branch, attempts e artefatos.
-- [ ] Duas Features **sem** overlap rodam ao mesmo tempo no mesmo Project, cada uma isolada, sem colisão de worktree, branch ou estado.
-- [ ] Uma segunda solicitação que colide com uma Feature ativa gera `ask_user`; escolhendo "absorver", ela entra na Feature existente sem criar Feature nova, e isso aparece em `events`.
-- [ ] Uma Task com `role: frontend-developer` chega ao `FakeHarness` com o `systemPrompt` configurado, antes do contrato padrão e do contexto da Task, nessa ordem.
-- [ ] `apo role list` mostra os embutidos e os overrides do Project corretamente mesclados.
-- [ ] Uma mensagem `information` de uma role para outra é entregue no worker seguinte daquela role, sem travar quem enviou.
-- [ ] A mesma mensagem é vista por duas Tasks diferentes da mesma role (broadcast), em ordem FIFO.
-- [ ] Uma mensagem sem Task correspondente até o fim da Feature aparece como `messages.undelivered` no relatório final.
-- [ ] Uma pergunta bloqueante de um worker é respondida pelo `AgentRunner("lead", …)` e a Task resume sem intervenção humana — ou escala para `needs_human` quando a confiança é baixa.
-- [ ] O processo do worker, inspecionado via log, não tem acesso a nenhuma variável de ambiente do daemon fora da allowlist.
+- [x] 3 Tasks rodam ao mesmo tempo, cada uma na sua worktree (verificado pelos timestamps dos attempts) — `feature-graph.test.ts`; no E2E real, 2 Tasks paralelas no Claude Code.
+- [x] A Task dependente enxerga o código das dependências — nasce do HEAD de integração; no E2E real, `src/index.ts` reexporta o que as duas Tasks anteriores criaram.
+- [x] Um conflito real é resolvido por Task corretiva — E2E real: a absorção de um pedido sobreposto gerou conflito em `src/modulo.ts`; a Task corretiva (`origin: conflict`, worktree de integração) resolveu e a Feature fechou `completed` com testes passando.
+- [x] Uma Task `read` roda em `shared` sem criar worktree — `feature-graph.test.ts` (FakeHarness; só vale quando todos os targets têm read-only confiável).
+- [x] `apo task show` mostra worktree, branch, attempts e artefatos.
+- [x] Duas Features **sem** overlap rodam ao mesmo tempo no mesmo Project, cada uma isolada, sem colisão de worktree, branch ou estado — `feature-graph.test.ts` (M2.14).
+- [x] Uma segunda solicitação que colide com uma Feature ativa gera `ask_user`; escolhendo "absorver", ela entra na Feature existente sem criar Feature nova, e isso aparece em `events` — E2E real (Lead julgou a interseção relevante; `--on-overlap absorb` anexou 2 Tasks; `feature.request_absorbed`).
+- [x] Uma Task com `role: frontend-developer` chega ao `FakeHarness` com o `systemPrompt` configurado, antes do contrato padrão e do contexto da Task, nessa ordem.
+- [x] `apo role list` mostra os embutidos e os overrides do Project corretamente mesclados (merge coberto em `roles.test.ts`).
+- ~~Uma mensagem `information` de uma role para outra é entregue no worker seguinte daquela role, sem travar quem enviou.~~ — adiado (triage M2.0).
+- ~~A mesma mensagem é vista por duas Tasks diferentes da mesma role (broadcast), em ordem FIFO.~~ — adiado (triage M2.0).
+- ~~Uma mensagem sem Task correspondente até o fim da Feature aparece como `messages.undelivered` no relatório final.~~ — adiado (triage M2.0).
+- ~~Uma pergunta bloqueante de um worker é respondida pelo `AgentRunner("lead", …)` e a Task resume sem intervenção humana — ou escala para `needs_human` quando a confiança é baixa.~~ — adiado (triage M2.0).
+- [x] O processo do worker não tem acesso a nenhuma variável de ambiente do daemon fora da allowlist (entregue e verificado no M3).
+- [x] Uma Task dependente recebe no prompt os artefatos (`WorkerReport.artifacts`) da Task de que depende.
+- [x] O `AntigravityHarness` passa na suíte de contrato ao vivo e conclui uma Task real com um modelo Gemini (`gemini-3.1-pro-high`, `--harness antigravity`, Feature `completed`). Limitações em `spikes/antigravity.md`: só edita arquivos, não confina escrita, sem saída estruturada (fica fora do roteamento do Lead) — por isso é opt-in. Comandos de shell podem ser liberados por target com `dangerouslySkipPermissions: true` (default `false`); verificado em E2E real.
+
+**Achados do E2E real:**
+- Task de escrita **sem mudanças** não é falha: num DAG o trabalho pode já ter vindo da dependência (a Task "testes" encontrou os testes escritos pela anterior e derrubava a Feature). Agora conclui com evento `task.no_changes`; "Feature que não fez nada" continua barrada no verify da integração.
+- `--on-overlap absorb` sem alvo (CLI não interativa) faz o daemon descobrir a Feature sobreposta.
 
 ---
 

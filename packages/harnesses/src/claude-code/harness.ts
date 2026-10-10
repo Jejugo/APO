@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { HarnessId, ProviderId } from "@apo/domain";
 import { detectLimitFailure } from "../limit-detection.js";
 import { runSupervisedProcess } from "../run-process.js";
@@ -41,19 +42,34 @@ async function run(
   signal: AbortSignal,
 ): Promise<AgentExecutionResult> {
   const startedAt = Date.now();
+  const env = input.env ?? buildWorkerEnvironment();
 
   const result = await runSupervisedProcess({
     file: "claude",
     args,
     cwd: input.cwd,
-    env: input.env ?? buildWorkerEnvironment(),
+    env,
     timeoutMs: input.timeoutMs,
     signal,
     logPath: input.logPath,
+    ...(input.stallTimeoutMs ? { stallTimeoutMs: input.stallTimeoutMs } : {}),
+    // Em `--output-format json` o stdout fica mudo até o fim; o transcript da
+    // sessão em ~/.claude/projects é o sinal de vida.
+    activityPaths: env.HOME ? [join(env.HOME, ".claude", "projects")] : [],
   });
 
   const durationMs = Date.now() - startedAt;
 
+  if (result.stalled) {
+    return {
+      outcome: "failure",
+      failure: {
+        kind: "stalled",
+        message: `Sem saída nem escrita em disco por ${input.stallTimeoutMs}ms`,
+      },
+      durationMs,
+    };
+  }
   if (result.timedOut) {
     return {
       outcome: "failure",

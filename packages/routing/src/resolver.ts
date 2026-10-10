@@ -1,12 +1,10 @@
 // ExecutionTargetResolver (M3.5) — seção 6.5 do TECHNICAL_PLAN.md e 14.1 do
 // PLAN.md, como função pura:
 //
-//   preferência efetiva = Task override → Feature override → (router)
+//   preferência efetiva = Task override → Feature override → Role preference → (router)
 //   forced    → usa o target; indisponível → needs_human (sem trocar de provider)
 //   preferred → usa o target se disponível; senão router, registrando o motivo
 //   auto      → router
-//
-// "Role preference" (project.yaml) entra junto com o RoleRegistry (M2.15).
 
 import type { ExecutionPreference, ResolutionSource } from "@apo/domain";
 import { type RouteResult, routeTask } from "./rule-based-router.js";
@@ -17,6 +15,8 @@ export interface ResolveInput {
   capacity: (provider: RoutingCandidate["provider"]) => ProviderCapacitySnapshot;
   taskPreference?: ExecutionPreference | null;
   featurePreference?: ExecutionPreference | null;
+  /** `RoleDefinition.executionPreference` (M2.15) — abaixo de Task e Feature. */
+  rolePreference?: ExecutionPreference | null;
   /** Targets a evitar (só vale para preferred/auto; forced nunca troca). */
   exclude?: string[];
   policy?: RoutingPolicy;
@@ -57,6 +57,7 @@ export function resolveExecutionTarget(input: ResolveInput): ResolveResult {
   const overrides: Array<[ExecutionPreference | null | undefined, ResolutionSource]> = [
     [input.taskPreference, "task_override"],
     [input.featurePreference, "feature_override"],
+    [input.rolePreference, "role_preference"],
   ];
   const effective = overrides.find(([preference]) => preference && preference.mode !== "auto");
 
