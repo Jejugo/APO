@@ -1,0 +1,1 @@
+ALTER TABLE "features" ADD COLUMN "execution_preference" jsonb;

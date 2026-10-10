@@ -1,0 +1,118 @@
+import type { HarnessId, ProviderId } from "@apo/domain";
+import { execa } from "execa";
+import type {
+  AgentCapabilities,
+  AgentExecutionInput,
+  AgentExecutionResult,
+  AgentHarness,
+  ResumeExecutionInput,
+} from "../types.js";
+import { buildClaudeCodeArgs } from "./build-args.js";
+import { type ClaudeCodeResultJson, classifyClaudeCodeFailure } from "./classify-failure.js";
+
+export class ClaudeCodeHarness implements AgentHarness {
+  readonly id: HarnessId = "claude-code";
+  readonly provider: ProviderId = "anthropic";
+
+  getCapabilities(): AgentCapabilities {
+    return {
+      supportsReadOnly: true,
+      supportsResume: true,
+      supportsOutputSchema: true,
+      // Confirmado no spike M0.9: Claude Code não sandboxa rede em nenhum modo.
+      supportsNetworkToggle: false,
+    };
+  }
+
+  execute(input: AgentExecutionInput, signal: AbortSignal): Promise<AgentExecutionResult> {
+    return run(buildClaudeCodeArgs(input), input, signal);
+  }
+
+  resume(input: ResumeExecutionInput, signal: AbortSignal): Promise<AgentExecutionResult> {
+    return run(buildClaudeCodeArgs(input, input.sessionId), input, signal);
+  }
+}
+
+async function run(
+  args: string[],
+  input: AgentExecutionInput,
+  signal: AbortSignal,
+): Promise<AgentExecutionResult> {
+  const startedAt = Date.now();
+
+  const result = await execa("claude", args, {
+    cwd: input.cwd,
+    // Confirmado no spike: sem stdin fechado, o CLI pode esperar por EOF.
+    stdin: "ignore",
+    timeout: input.timeoutMs,
+    cancelSignal: signal,
+    killDescendants: true,
+    reject: false,
+  });
+
+  const durationMs = Date.now() - startedAt;
+
+  if (result.timedOut) {
+    return {
+      outcome: "failure",
+      failure: { kind: "timeout", message: `Excedeu o timeout de ${input.timeoutMs}ms` },
+      durationMs,
+    };
+  }
+  if (result.isCanceled) {
+    return {
+      outcome: "failure",
+      failure: { kind: "cancelled", message: "Cancelado via AbortSignal" },
+      durationMs,
+    };
+  }
+
+  let json: ClaudeCodeResultJson;
+  try {
+    json = JSON.parse(result.stdout) as ClaudeCodeResultJson;
+  } catch {
+    return {
+      outcome: "failure",
+      failure: {
+        kind: "crash",
+        message: `Saída não é JSON válido (exit ${result.exitCode}): ${result.stdout.slice(0, 500)}`,
+      },
+      durationMs,
+    };
+  }
+
+  const failure = classifyClaudeCodeFailure(json);
+  if (failure) {
+    return {
+      outcome: "failure",
+      failure,
+      ...(json.session_id !== undefined ? { sessionId: json.session_id } : {}),
+      durationMs,
+    };
+  }
+
+  let structuredOutput: unknown;
+  if (input.outputSchema && json.result !== undefined) {
+    try {
+      structuredOutput = JSON.parse(json.result);
+    } catch {
+      return {
+        outcome: "failure",
+        failure: {
+          kind: "invalid_output",
+          message: "A saída não é um JSON válido para o outputSchema pedido",
+        },
+        ...(json.session_id !== undefined ? { sessionId: json.session_id } : {}),
+        durationMs,
+      };
+    }
+  }
+
+  return {
+    outcome: "success",
+    ...(json.session_id !== undefined ? { sessionId: json.session_id } : {}),
+    ...(json.result !== undefined ? { finalMessage: json.result } : {}),
+    ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+    durationMs,
+  };
+}

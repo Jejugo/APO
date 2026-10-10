@@ -1,0 +1,16 @@
+{
+  "name": "@apo/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "apo": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@apo/config": "workspace:*",
+    "commander": "^15.0.0"
+  }
+}

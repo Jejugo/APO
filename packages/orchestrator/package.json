@@ -1,0 +1,25 @@
+{
+  "name": "@apo/orchestrator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@apo/config": "workspace:*",
+    "@apo/db": "workspace:*",
+    "@apo/domain": "workspace:*",
+    "@apo/harnesses": "workspace:*",
+    "@apo/observability": "workspace:*",
+    "@langchain/langgraph": "^1.4.21",
+    "execa": "^10.1.0",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
+  }
+}

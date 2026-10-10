@@ -1,10 +1,12 @@
-import { eq } from "drizzle-orm";
+import { and, eq, gt, inArray } from "drizzle-orm";
 import type { Db } from "./connection.js";
 import {
   events,
   type featureStatusEnum,
   features,
+  projectAgents,
   projects,
+  type taskAttemptStatusEnum,
   taskAttempts,
   type taskStatusEnum,
   tasks,
@@ -12,6 +14,7 @@ import {
 
 type FeatureStatus = (typeof featureStatusEnum.enumValues)[number];
 type TaskStatus = (typeof taskStatusEnum.enumValues)[number];
+type TaskAttemptStatus = (typeof taskAttemptStatusEnum.enumValues)[number];
 
 export class ProjectRepository {
   constructor(private readonly db: Db) {}
@@ -60,6 +63,11 @@ export class FeatureRepository {
     return this.db.select().from(features).where(eq(features.projectId, projectId));
   }
 
+  /** Global, não restrito a um Project — usado na recovery do daemon (M1.13). */
+  listByStatuses(statuses: FeatureStatus[]) {
+    return this.db.select().from(features).where(inArray(features.status, statuses));
+  }
+
   updateStatus(id: string, status: FeatureStatus) {
     return this.db
       .update(features)
@@ -91,6 +99,18 @@ export class TaskRepository {
 
   listByFeature(featureId: string) {
     return this.db.select().from(tasks).where(eq(tasks.featureId, featureId));
+  }
+
+  update(
+    id: string,
+    changes: Partial<{ status: TaskStatus; worktreePath: string; branch: string }>,
+  ) {
+    return this.db
+      .update(tasks)
+      .set({ ...changes, updatedAt: new Date() })
+      .where(eq(tasks.id, id))
+      .returning()
+      .then(([row]) => row);
   }
 
   updateStatus(id: string, status: TaskStatus) {
@@ -125,6 +145,57 @@ export class TaskAttemptRepository {
   listByTask(taskId: string) {
     return this.db.select().from(taskAttempts).where(eq(taskAttempts.taskId, taskId));
   }
+
+  update(
+    id: string,
+    changes: Partial<{
+      status: TaskAttemptStatus;
+      failureKind: string | null;
+      pid: number | null;
+      endedAt: Date;
+    }>,
+  ) {
+    return this.db
+      .update(taskAttempts)
+      .set(changes)
+      .where(eq(taskAttempts.id, id))
+      .returning()
+      .then(([row]) => row);
+  }
+
+  /** Recovery do daemon (M1.13): nenhum attempt "working" sobrevive a um restart — o processo que o executava morreu com o daemon. */
+  async interruptAllWorking(): Promise<number> {
+    const rows = await this.db
+      .update(taskAttempts)
+      .set({ status: "interrupted", endedAt: new Date() })
+      .where(eq(taskAttempts.status, "working"))
+      .returning({ id: taskAttempts.id });
+    return rows.length;
+  }
+}
+
+export class ProjectAgentRepository {
+  constructor(private readonly db: Db) {}
+
+  create(input: typeof projectAgents.$inferInsert) {
+    return this.db
+      .insert(projectAgents)
+      .values(input)
+      .returning()
+      .then(([row]) => row);
+  }
+
+  getByProjectAndRole(projectId: string, roleId: string) {
+    return this.db
+      .select()
+      .from(projectAgents)
+      .where(and(eq(projectAgents.projectId, projectId), eq(projectAgents.roleId, roleId)))
+      .then(([row]) => row);
+  }
+
+  listByProject(projectId: string) {
+    return this.db.select().from(projectAgents).where(eq(projectAgents.projectId, projectId));
+  }
 }
 
 /** Implementa a forma de `EventSink` de @apo/observability, sem depender do pacote. */
@@ -147,5 +218,18 @@ export class EventRepository {
       payload: event.payload ?? null,
       createdAt: event.createdAt,
     });
+  }
+
+  /** `afterId` para polling incremental (M1.12 — `apo logs -f`). */
+  listByFeature(featureId: string, afterId?: number) {
+    return this.db
+      .select()
+      .from(events)
+      .where(
+        afterId !== undefined
+          ? and(eq(events.featureId, featureId), gt(events.id, afterId))
+          : eq(events.featureId, featureId),
+      )
+      .orderBy(events.id);
   }
 }

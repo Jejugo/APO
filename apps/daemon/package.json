@@ -1,0 +1,24 @@
+{
+  "name": "@apo/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "apo-daemon": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@apo/config": "workspace:*",
+    "@apo/db": "workspace:*",
+    "@apo/domain": "workspace:*",
+    "@apo/harnesses": "workspace:*",
+    "@apo/observability": "workspace:*",
+    "@apo/orchestrator": "workspace:*",
+    "@langchain/langgraph-checkpoint-postgres": "^1.0.6",
+    "fastify": "^5.12.5",
+    "zod": "^3.25.76"
+  }
+}

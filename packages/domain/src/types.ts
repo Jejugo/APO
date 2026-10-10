@@ -36,6 +36,10 @@ export interface Feature {
   objective: string;
   intent: FeatureIntent;
   status: FeatureStatus;
+  // Escolhido na criação (flag --harness) — persistido aqui para a recovery
+  // (M1.13) saber o que retomar mesmo se o daemon caiu antes de 'plan' criar
+  // a Task.
+  executionPreference?: ExecutionPreference;
   integrationBranch?: string;
   fixIteration: number;
   prUrl?: string;
@@ -66,6 +70,11 @@ export interface Task {
   kind: TaskKind;
   status: TaskStatus;
   dependencies: string[];
+  // Override manual via `--harness` (seção 14.1 do PLAN.md). A hierarquia
+  // completa (Feature override → Role preference → router) chega no M2/M3.
+  executionPreference?: ExecutionPreference;
+  worktreePath?: string;
+  branch?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -88,6 +97,11 @@ export interface TaskAttempt {
   n: number;
   provider: ProviderId;
   harness: HarnessId;
+  model?: string;
+  // Texto livre: o vocabulário canônico (FailureKind) vive em packages/harnesses.
+  failureKind?: string;
+  pid?: number;
+  logPath?: string;
   status: TaskAttemptStatus;
   startedAt: Date;
   endedAt?: Date;
@@ -126,5 +140,27 @@ export interface Project {
   name: string;
   repoPath: string;
   defaultBranch: string;
+  // Snapshot do .apo/project.yaml no momento de `apo project add` — o
+  // arquivo continua sendo a fonte de verdade; isto é auditoria/drift.
+  configSnapshot?: Record<string, unknown>;
   createdAt: Date;
+}
+
+// --- ProjectAgent (seção 6.8 do TECHNICAL_PLAN.md) --------------------------
+//
+// "persistent" nunca significa processo aberto: dá continuidade de contexto
+// (memoryNamespace a partir do M5, conversationThreadId a partir do M6), não
+// uma sessão de CLI viva entre chamadas de AgentRunner.run().
+
+export type ProjectAgentLifecycle = "persistent" | "dynamic";
+
+export interface ProjectAgent {
+  id: string;
+  projectId: string;
+  roleId: string;
+  lifecycle: ProjectAgentLifecycle;
+  executionPreference?: ExecutionPreference;
+  memoryNamespace?: string;
+  conversationThreadId?: string;
+  enabled: boolean;
 }

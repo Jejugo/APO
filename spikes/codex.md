@@ -19,7 +19,7 @@
 
 `--output-schema <arquivo.json>` + `-o <arquivo>`. Schema usado: `{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`, prompt trivial ("qual é a capital da França?").
 
-**Resultado: 10/10 execuções produziram JSON válido conforme o schema** (`{"answer":"Paris."}` em todas). Taxa de conformidade: 100% nessa amostra pequena/trivial — consistente com o uso de `--output-schema` como validação do lado do provedor (não é só prompt engineering; há enforcement real, igual à API Responses da OpenAI).
+**Correção pós-M1.4 (reproduzido manualmente ao implementar o `CodexHarness`): este schema, exatamente como registrado aqui, falha com 400** (`"Invalid schema for response_format 'codex_output_schema': 'schema.additionalProperties' is required to be supplied and to be false when strict is true"`) — testado de novo contra o mesmo binário (`codex-cli 0.161.0`), com e sem `--ignore-user-config`, em `read-only` e `workspace-write`. O `--output-schema` do Codex usa o modo *strict* da OpenAI, que exige `additionalProperties: false` no nível raiz do schema — algo que o Claude Code não exige para o `--json-schema` equivalente. Não há explicação confirmada para o "10/10 válidas" original deste relatório (o schema literal registrado não roda hoje); o resultado anterior não deve ser considerado confiável. **O `CodexHarness` real (`packages/harnesses/src/codex/temp-files.ts`) agora normaliza isso automaticamente** — injeta `additionalProperties: false` em qualquer `outputSchema` de objeto que não o declare, para que o mesmo schema funcione nos dois harnesses sem quem chama `AgentHarness.execute()` precisar saber dessa diferença. Com a normalização, a suíte de contrato real (`packages/harnesses/src/contract.test.ts`, `APO_LIVE_HARNESS_TESTS=1`) confirma sucesso.
 
 ## 3. Read-only
 
@@ -78,7 +78,7 @@ Não tentei provocar rate-limit real. Capturei dois formatos de erro substitutos
 | Necessidade | Hipótese original | Confirmado no spike |
 |---|---|---|
 | Modo headless | `codex exec` | Confirmado. Mas `-a/--ask-for-approval` não existe em `exec` (só no `codex` top-level) |
-| Saída estruturada | `--json` | Confirmado, formato JSONL de eventos (`thread.started`, `item.*`, `turn.completed` com `usage`, `turn.failed`). Para resultado final tipado, usar `--output-schema` + `-o` |
+| Saída estruturada | `--json` | Confirmado, formato JSONL de eventos (`thread.started`, `item.*`, `turn.completed` com `usage`, `turn.failed`). Para resultado final tipado, usar `--output-schema` + `-o` — **mas o schema precisa de `additionalProperties: false` no nível raiz** (modo strict da OpenAI), o que o `--json-schema` do Claude Code não exige; o `CodexHarness` normaliza isso automaticamente (ver seção 2, correção pós-M1.4) |
 | Read-only | `--sandbox read-only` | Confirmado — bloqueia escrita de fato |
 | Escrita restrita ao workspace | `--sandbox workspace-write` | **Parcialmente refutado** — não bloqueou escrita em `../` nem em `/tmp/...` absoluto. Mitigar com validação pós-execução (`git diff` vs. `expectedPaths`), não confiar só na flag |
 | Sem prompts (YOLO) | `--full-auto` / `--ask-for-approval never` | **Nenhuma das duas existe em `codex exec`.** Em `exec`, não há prompts por padrão (headless já é "sem prompts"); o equivalente a YOLO total é `--dangerously-bypass-approvals-and-sandbox` |

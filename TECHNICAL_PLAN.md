@@ -291,7 +291,7 @@ Cada harness implementa a sua (`packages/harnesses/<provider>/capacity-collector
 | Necessidade | Claude Code | Codex | Gemini CLI (🔬 não confirmado) |
 |---|---|---|---|
 | Modo headless | `claude -p --output-format json` | `codex exec --json -o <arquivo>` | `gemini -p` |
-| Saída estruturada | `--output-format json` (resultado único) ou `--json-schema <schema>` para forçar formato — 10/10 válidas no spike | JSONL de eventos (`thread.started`, `item.*`, `turn.completed`); para resultado final tipado, `--output-schema <arquivo>` + `-o` — 10/10 válidas no spike | `-o/--output-format json` |
+| Saída estruturada | `--output-format json` (resultado único) ou `--json-schema <schema>` para forçar formato — 10/10 válidas no spike | JSONL de eventos (`thread.started`, `item.*`, `turn.completed`); para resultado final tipado, `--output-schema <arquivo>` + `-o`. **Exige `additionalProperties: false` no nível raiz do schema** (modo strict da OpenAI — achado do M1.4, não do spike original; `spikes/codex.md` §2 foi corrigido). `CodexHarness` normaliza isso automaticamente, então `AgentExecutionInput.outputSchema` é o mesmo objeto para os dois harnesses | `-o/--output-format json` |
 | Read-only | `--permission-mode plan` — bloqueio real; mecanismo é a ferramenta `ExitPlanMode` não existir em modo headless | `-s read-only` — bloqueio real confirmado | `--approval-mode plan` |
 | Escrita restrita ao workspace | `--permission-prompts none` nega automaticamente escrita fora de `cwd`/`--add-dir`; negação aparece estruturada em `permission_denials` na saída JSON | `-s workspace-write` — **não confina de fato** (escreveu em `../` e em `/tmp` absoluto no spike); ver mitigação na seção 6.1 | `-s/--sandbox` é booleano (não enum); semântica exata não testada |
 | Rede em modo de escrita | Não sandboxada por padrão — `pnpm install` funcionou sem flag extra | Bloqueada por padrão em `workspace-write` (confirmado); liberar com `-c 'sandbox_workspace_write.network_access=true'` | não testado |
@@ -691,12 +691,16 @@ Cada spike é um script em `spikes/<cli>/run.ts` que roda contra uma cópia do `
 
 #### Gate de saída
 
-- [ ] A mesma Feature conclui com os dois harnesses reais.
-- [ ] O restart do daemon no meio da execução não perde a Feature.
-- [ ] Uma pergunta é respondida sem criar Feature, e o evento `query.answered` existe.
-- [ ] O teste de arquitetura passa.
-- [ ] Nenhum agente escreveu no working tree principal do repo durante os testes.
-- [ ] `apo pause`/`apo resume`/`apo cancel` mudam o status da Feature corretamente; `cancel` interrompe o attempt em execução via `AbortSignal`.
+- [x] A mesma Feature conclui com os dois harnesses reais. Validado manualmente (`sample-repo` copiado para fora do monorepo, `.git` próprio): `--harness claude-code` e `--harness codex` completam, com commit real na branch de cada um.
+- [x] O restart do daemon no meio da execução não perde a Feature. Validado tanto via `FakeHarness` (`feature-graph.test.ts`) quanto com Claude Code real: uma Feature que ficou presa em `executing` (ver achado sobre `cancelSignal` abaixo) foi retomada por `apo daemon start` e completou.
+- [x] Uma pergunta é respondida sem criar Feature, e o evento `query.answered` existe. Validado: `apo run "pergunta..."` responde direto, `apo feature list` confirma que nenhuma Feature nova foi criada.
+- [x] O teste de arquitetura passa.
+- [x] Nenhum agente escreveu no working tree principal do repo durante os testes (todas as escritas ficaram em `~/.apo/worktrees/<featureId>/`).
+- [x] `apo pause`/`apo resume`/`apo cancel` mudam o status da Feature corretamente; `cancel` interrompe o attempt em execução via `AbortSignal`. Validado com Claude Code real — processo morto confirmado sem órfãos (`ps aux` limpo).
+
+**Achado real durante a validação manual, não previsto no design original:** o `AbortSignal` do cancelamento não pode ir no campo `signal` de nível top de `graph.invoke()` — esse campo é interpretado pelo próprio LangGraph, que aborta a invocação **inteira** quando ele dispara, pulando `verify`/`complete` e deixando a Feature presa em `executing` para sempre (só um restart do daemon, via recovery, resolvia). O cancelamento tem que viajar por `configurable.cancelSignal` (não interpretado pelo runtime do LangGraph, só lido manualmente pelo node `execute`), para que o resto do graph sempre rode e grave um status terminal. Ver `apps/daemon/src/feature-runner.ts` e `packages/orchestrator/src/feature-graph.ts`. **Relevante para o M2.3** (`ProcessSupervisor`): qualquer `AbortSignal` usado para cancelar uma Task individual dentro de um graph maior precisa do mesmo cuidado — nunca no `signal` de `invoke()`/`stream()`.
+
+**Dois outros achados reais, já corrigidos:** (1) git/commit é responsabilidade determinística do `WorkerManager`, não do agente — confirmado necessário: o Claude Code real escreveu os arquivos certos mas não comitou por conta própria (`commitIfDirty()` em `worktree.ts`, exatamente como a seção 6.3 já previa, mas que não estava implementado no node `execute` do M1.9 original). (2) `fixtures/sample-repo` tinha uma configuração de `allowScripts` no `package.json` que não é lida por versões recentes do pnpm (`pnpm.allowedBuiltDependencies`/`allowBuilds` migraram de lugar) — qualquer cópia fresca do fixture travava em `ERR_PNPM_IGNORED_BUILDS` ao rodar `pnpm install` dentro de uma Task real. Corrigido com um `pnpm-workspace.yaml` próprio no fixture.
 
 ---
 

@@ -3,6 +3,10 @@ dist/
 *.tsbuildinfo
 coverage/
 
+# o repo usa pnpm em todo lugar — um package-lock.json só pode ter nascido de
+# um npm install acidental (já aconteceu uma vez no fixtures/sample-repo)
+package-lock.json
+
 .env
 .env.*
 !.env.example

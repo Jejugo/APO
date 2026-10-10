@@ -1,8 +1,17 @@
-import { bigserial, integer, jsonb, pgEnum, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  bigserial,
+  boolean,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 
-// Schema mínimo do M0 (seção 5.1 do TECHNICAL_PLAN.md) — só as colunas já
-// usadas até o M1. Colunas de fases futuras (role, expected_paths,
-// agent_messages, etc.) chegam via migration nova quando a fase que as usa
+// Schema do M0 + M1 (seção 5.1 do TECHNICAL_PLAN.md) — só as colunas já
+// usadas até o M1. Colunas de fases futuras (expected_paths, agent_messages,
+// handovers, etc.) chegam via migration nova quando a fase que as usa
 // começar, não antes (regra 3 do PLAN.md).
 
 export const featureIntentEnum = pgEnum("feature_intent", ["bugfix", "feature"]);
@@ -54,12 +63,38 @@ export const taskAttemptStatusEnum = pgEnum("task_attempt_status", [
   "interrupted",
 ]);
 
+export const projectAgentLifecycleEnum = pgEnum("project_agent_lifecycle", [
+  "persistent",
+  "dynamic",
+]);
+
 export const projects = pgTable("projects", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   repoPath: text("repo_path").notNull(),
   defaultBranch: text("default_branch").notNull().default("main"),
+  // Snapshot do .apo/project.yaml lido em `apo project add` (M1.3) — não é a
+  // fonte de verdade (o arquivo é), serve para auditoria e para detectar
+  // drift entre o que o Project tinha quando foi registrado e o que tem hoje.
+  configSnapshot: jsonb("config_snapshot"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Seção 6.8 do TECHNICAL_PLAN.md — M1 só cria o registro "lead" por Project.
+// "persistent" nunca significa processo aberto: dá continuidade de contexto
+// (memoryNamespace/conversationThreadId, usados a partir do M5/M6), não uma
+// sessão de CLI viva entre chamadas.
+export const projectAgents = pgTable("project_agents", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id),
+  roleId: text("role_id").notNull(),
+  lifecycle: projectAgentLifecycleEnum("lifecycle").notNull(),
+  executionPreference: jsonb("execution_preference"),
+  memoryNamespace: text("memory_namespace"),
+  conversationThreadId: text("conversation_thread_id"),
+  enabled: boolean("enabled").notNull().default(true),
 });
 
 export const features = pgTable("features", {
@@ -70,6 +105,10 @@ export const features = pgTable("features", {
   objective: text("objective").notNull(),
   intent: featureIntentEnum("intent").notNull(),
   status: featureStatusEnum("status").notNull().default("created"),
+  // Escolhido na criação (flag --harness) e persistido aqui, não só na Task —
+  // se o daemon cair antes do node 'plan' criar a Task, a recovery (M1.13)
+  // ainda precisa saber qual harness retomar com.
+  executionPreference: jsonb("execution_preference"),
   integrationBranch: text("integration_branch"),
   fixIteration: integer("fix_iteration").notNull().default(0),
   prUrl: text("pr_url"),
@@ -87,6 +126,13 @@ export const tasks = pgTable("tasks", {
   kind: taskKindEnum("kind").notNull(),
   status: taskStatusEnum("status").notNull().default("pending"),
   dependencies: text("dependencies").array().notNull().default([]),
+  // Override manual via `--harness` (seção 14.1 do PLAN.md, ExecutionPreference
+  // serializado). A hierarquia completa (Feature override → Role preference →
+  // router) só chega no M2/M3 — em M1 isso é lido e repassado direto, sem
+  // ExecutionTargetResolver.
+  executionPreference: jsonb("execution_preference"),
+  worktreePath: text("worktree_path"),
+  branch: text("branch"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -99,6 +145,13 @@ export const taskAttempts = pgTable("task_attempts", {
   n: integer("n").notNull(),
   provider: providerEnum("provider").notNull(),
   harness: harnessEnum("harness").notNull(),
+  // Texto livre, não enum: o vocabulário canônico (FailureKind) vive em
+  // packages/harnesses (regra 4 do PLAN.md) — packages/db não deve depender
+  // dele só para validar uma coluna.
+  model: text("model"),
+  failureKind: text("failure_kind"),
+  pid: integer("pid"),
+  logPath: text("log_path"),
   status: taskAttemptStatusEnum("status").notNull().default("starting"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   endedAt: timestamp("ended_at", { withTimezone: true }),
