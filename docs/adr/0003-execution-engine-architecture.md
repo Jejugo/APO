@@ -90,6 +90,16 @@ Relatórios em `spikes/execution-engines/` (resumo em `comparison.md`).
 2. O `ApoNativeEngine` (M2) continua, sem a mensageria: mailbox e perguntas bloqueantes (M2.18–M2.21) ficam adiadas até um caso real. Entre Tasks de providers diferentes, os artefatos tipados via DAG (M2.9) cobrem a passagem de informação.
 3. **Novo:** `AntigravityHarness` (`agy -p`, single-agent) como terceiro provider. A conta Google do usuário funciona no `agy` e dá acesso a modelos Gemini, que o Gemini CLI tinha recusado no M0.
 
+## Spike Herdr como runtime (2026-10-10, pós-M2)
+
+Pergunta: o Herdr hospeda `claude -p` / `codex exec` com a saída estruturada íntegra e mantém o worker vivo se o daemon morrer? Isso justificaria uma interface `AgentRuntime` com duas implementações. Relatório em `spikes/herdr.md`.
+
+- A tela do pane não preserva saída grande: uma linha de 200 KB se perdeu inteira, e o JSONL perdeu eventos (996 de 5000). Só redirecionando para arquivo a saída chega íntegra.
+- O worker sobrevive à morte do daemon (ele é filho do servidor Herdr), mas morre se o servidor Herdr morrer. O pane também herda o socket de controle do Herdr.
+- O ganho real (worker destacado + saída em arquivo) não depende do Herdr.
+
+**Decisão:** sem `AgentRuntime` e sem Herdr no caminho crítico. Se a sobrevivência à morte do daemon virar requisito, a solução é um spawn destacado nativo (pid + arquivos em `~/.apo/runs/<attemptId>/`, reatado no boot). O Herdr pode entrar só como visualizador opcional.
+
 ## Próximo passo de revisão (histórico)
 
 Primeiro item do M2: triage de 1–2 horas (feito pelo agente, não pelo usuário) com uma pergunta por candidato: "dá para disparar, acompanhar e cancelar via CLI, sem terminal interativo?". Ordem: Claude Code Agent Teams, multi-agente nativo do Codex (antes do `codex-teams`), Antigravity Teamwork. AgentScope fica só como leitura. Quem falhar sai da lista. Só quem passar recebe o benchmark completo (feature full-stack, comunicação entre agents, alterações paralelas, falha de worker, restart, intervenção humana). Com o resultado, este ADR muda para "aceito" ou é revisto.
