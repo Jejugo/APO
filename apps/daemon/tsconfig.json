@@ -11,6 +11,7 @@
     { "path": "../../packages/domain" },
     { "path": "../../packages/harnesses" },
     { "path": "../../packages/observability" },
-    { "path": "../../packages/orchestrator" }
+    { "path": "../../packages/orchestrator" },
+    { "path": "../../packages/routing" }
   ]
 }

@@ -2,6 +2,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   GlobalConfigSchema,
+  ProjectConfigSchema,
   apoHome,
   daemonPidFilePath,
   expandHome,
@@ -15,18 +16,23 @@ import {
 import {
   EventRepository,
   FeatureRepository,
+  HandoverRepository,
   ProjectAgentRepository,
   ProjectRepository,
+  ProviderCapacityRepository,
+  RoutingDecisionRepository,
   TaskAttemptRepository,
   TaskRepository,
   createDb,
 } from "@apo/db";
-import type { HarnessId } from "@apo/domain";
-import { ClaudeCodeHarness, CodexHarness } from "@apo/harnesses";
+import { buildWorkerEnvironment } from "@apo/harnesses";
 import { createLogger } from "@apo/observability";
-import type { HarnessRegistry } from "@apo/orchestrator";
+import { DEFAULT_ROUTING_POLICY, type RoutingPolicy } from "@apo/routing";
+import { createCapacityMonitor } from "./capacity.js";
 import { FeatureRunner } from "./feature-runner.js";
+import { resumeFeatures, startCapacityResumer } from "./resume.js";
 import { buildServer } from "./server.js";
+import { buildTargetRegistry } from "./targets.js";
 
 const DEFAULT_DATABASE_URL = "postgres://apo:apo@localhost:5433/apo";
 
@@ -35,6 +41,15 @@ async function main(): Promise<void> {
   // `?? default`: mesma particularidade de inferência do zod com
   // exactOptionalPropertyTypes já registrada no M0 (packages/config/src/load.test.ts).
   const socketPath = expandHome(globalConfig.socketPath ?? "~/.apo/apo.sock");
+  const providersConfig = GlobalConfigSchema.shape.providers.parse(globalConfig.providers ?? {});
+  const routing = globalConfig.routing;
+  const routingPolicy: RoutingPolicy = {
+    capacityAware: routing?.capacityAware ?? DEFAULT_ROUTING_POLICY.capacityAware,
+    degradedAt: routing?.degradedAt ?? DEFAULT_ROUTING_POLICY.degradedAt,
+    avoidAt: routing?.avoidAt ?? DEFAULT_ROUTING_POLICY.avoidAt,
+    preferLowerUsageDifference:
+      routing?.preferLowerUsageDifference ?? DEFAULT_ROUTING_POLICY.preferLowerUsageDifference,
+  };
   const pidFilePath = daemonPidFilePath(apoHome());
   const databaseUrl = process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL;
   const worktreesRoot = join(apoHome(), "worktrees");
@@ -60,59 +75,61 @@ async function main(): Promise<void> {
   const tasks = new TaskRepository(db);
   const taskAttempts = new TaskAttemptRepository(db);
   const events = new EventRepository(db);
+  const routingDecisions = new RoutingDecisionRepository(db);
+  const handovers = new HandoverRepository(db);
+  const providerCapacity = new ProviderCapacityRepository(db);
 
-  const harnessRegistry: HarnessRegistry = {
-    "claude-code": new ClaudeCodeHarness(),
-    codex: new CodexHarness(),
-  };
+  const targets = buildTargetRegistry(providersConfig.targets, logger);
+  if (targets.length === 0) {
+    console.error("nenhum target de execução habilitado em providers.targets do config.yaml");
+    process.exit(1);
+  }
 
-  const featureRunner = new FeatureRunner({
-    logger,
-    features,
-    tasks,
-    taskAttempts,
+  const capacity = await createCapacityMonitor({
+    repository: providerCapacity,
     events,
-    databaseUrl,
-    harnessRegistry,
+    logger,
+    unknownResetRetryMs: providersConfig.unknownResetRetryMinutes * 60_000,
   });
+
+  const featureRunner = new FeatureRunner(
+    {
+      logger,
+      features,
+      tasks,
+      taskAttempts,
+      events,
+      routingDecisions,
+      handovers,
+      targets,
+      capacity,
+      maxAttemptsPerTask: providersConfig.maxAttemptsPerTask,
+      routingPolicy,
+      // M3.0b: allowlist base + o que o Project autorizar em .apo/project.yaml.
+      workerEnv: (repoPath) => {
+        const projectConfig = loadConfig(
+          join(repoPath, ".apo", "project.yaml"),
+          ProjectConfigSchema,
+        );
+        return buildWorkerEnvironment(projectConfig.worker?.env?.allow ?? []);
+      },
+      attemptLogPath: (attemptId) => join(apoHome(), "logs", "attempts", `${attemptId}.log`),
+    },
+    databaseUrl,
+  );
   await featureRunner.setup();
 
-  // M1.13 — Recovery: nenhum attempt "working" sobrevive a um restart (o
-  // processo que o executava morreu com o daemon); Features ainda ativas
-  // retomam re-invocando o graph do zero — os nodes são idempotentes
-  // (feature-graph.ts), então isso reusa a worktree e não duplica a Task.
+  // M1.13 — Recovery: nenhum attempt "working" sobrevive a um restart; Features
+  // ativas retomam re-invocando o graph (nodes idempotentes).
   const interruptedCount = await taskAttempts.interruptAllWorking();
   if (interruptedCount > 0) {
     logger.info({ interruptedCount }, "recovery: attempts 'working' marcados como 'interrupted'");
   }
+  const resumeDeps = { features, projects, featureRunner, logger, worktreesRoot };
+  await resumeFeatures(resumeDeps, ["planning", "executing"], "recovery");
 
-  const activeFeatures = await features.listByStatuses(["planning", "executing"]);
-  for (const feature of activeFeatures) {
-    const project = await projects.getById(feature.projectId);
-    const executionPreference = feature.executionPreference as { harness?: HarnessId } | null;
-    const harness = executionPreference?.harness;
-    if (!project || !harness) {
-      logger.warn(
-        { featureId: feature.id },
-        "recovery: feature ativa sem project ou harness — não foi retomada",
-      );
-      continue;
-    }
-    logger.info({ featureId: feature.id }, "recovery: retomando feature ativa");
-    void featureRunner
-      .run({
-        featureId: feature.id,
-        projectId: project.id,
-        repoPath: project.repoPath,
-        defaultBranch: project.defaultBranch,
-        objective: feature.objective,
-        harness,
-        worktreesRoot,
-      })
-      .catch((error: unknown) => {
-        logger.error({ error, featureId: feature.id }, "recovery: falha ao retomar feature");
-      });
-  }
+  // M3.9 — Features em paused_capacity voltam quando algum provider volta.
+  startCapacityResumer({ ...resumeDeps, capacity, targets });
 
   const app = buildServer({
     logger,
@@ -122,14 +139,21 @@ async function main(): Promise<void> {
     tasks,
     taskAttempts,
     events,
+    routingDecisions,
+    handovers,
     featureRunner,
-    harnessRegistry,
+    targets,
+    capacity,
+    routingPolicy,
     worktreesRoot,
   });
 
   await app.listen({ path: socketPath });
   writePidFile(pidFilePath, process.pid);
-  logger.info({ socketPath, pid: process.pid }, "apo daemon iniciado");
+  logger.info(
+    { socketPath, pid: process.pid, targets: targets.map((entry) => entry.candidate.targetId) },
+    "apo daemon iniciado",
+  );
 
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {

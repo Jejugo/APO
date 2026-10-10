@@ -37,11 +37,18 @@ E adiando:
 | **Jev** depende de serviço externo (TypeSafe System One). | Pode bloquear o roteamento se acoplado cedo. | `TaskRouter` como interface desde o início. Começar com `RuleBasedRouter`; Jev entra depois sem tocar no resto. |
 | **CLI não suporta modo read-only de verdade.** | `WorkspaceMode: shared` fica inseguro — agente pode escrever mesmo sendo "read-only". | Validar no spike do M0. Se o CLI não suportar flag de read-only confiável, essa Task sempre recebe worktree. |
 | **Mensageria peer-to-peer ao vivo entre workers efêmeros.** | Workers são processos CLI headless e efêmeros: não há inbox, o destinatário pode não estar rodando, bloquear para esperar resposta gasta quota. Sandbox de CLIs (ex: Codex) pode bloquear sockets locais, como já observado com o Maestri. | Resolvido com mailbox assíncrona (M2, seção 4.2): mensagem para role dinâmica nunca bloqueia quem envia, é entregue no próximo worker daquela role. Só pergunta para agente persistente (Lead/PO/CTO, seção 4.6) pode bloquear, porque esse destinatário está sempre disponível por construção. O canal "ao vivo" entre workers que estão rodando ao mesmo tempo continua adiado, condicionado ao spike M0.12. |
+| **Reconstruir infraestrutura de "time de agentes" que já existe em runtimes externos** (Claude Code Agent Teams, multi-agente do Codex, Antigravity Teamwork). | Muito código próprio para manter (mensageria, ciclo de vida de teammates) competindo com produtos que evoluem rápido. | ADR 0003 / seção 4.7: APO como control plane, M2 congelado até um triage dos runtimes externos. Ao contrário, depender de um runtime externo custa o failover entre providers naquela Feature. Por isso o failover (M3) vem primeiro: ele vale nos dois cenários. |
 | **Environment do worker herda segredos do daemon.** `execa` repassa `process.env` por padrão — `DATABASE_URL`, `JEV_API_KEY`, `GITHUB_TOKEN` ficariam visíveis a um worker em YOLO. | Allowlist explícita em `buildWorkerEnvironment()` (M2, `ProcessSupervisor`): só variáveis básicas (`HOME`, `PATH`, `SHELL`, `TERM`, `NODE_ENV`) + o que o Project autorizar explicitamente. Nunca denylist. |
 
 ---
 
 ## 3. Marcos
+
+> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → **M2** → M4 → M5 → M6.
+>
+> O failover entre providers (M3) passa na frente do DAG multi-task (M2). É o diferencial que nenhum runtime externo de agent teams oferece, e funciona já em cima do graph do M1, que na prática é o `SingleAgentEngine` (ver seção 4.7). O M2 fica congelado até um triage rápido decidir se o `ApoNativeEngine` precisa mesmo da infraestrutura de times própria ou se parte dela pode vir de um runtime externo.
+>
+> Os números dos marcos não mudaram de propósito: o TECHNICAL_PLAN.md referencia entregas como `M2.3` e `M3.7` em dezenas de lugares, e renumerar só criaria inconsistência.
 
 ### M0 — Spikes e fundação (~1 semana)
 
@@ -70,6 +77,10 @@ E adiando:
 
 ### M2 — Worktrees, workers, paralelismo e política de workspace (≈ Phases 3 e 7 do PLAN.md)
 
+> ⏸ **Congelado (ADR 0003).** Executado depois do M3. **Primeiro item ao descongelar:** triage de engines externos, feito pelo agente em 1–2 horas. A pergunta é uma só por candidato: "dá para disparar, acompanhar e cancelar via CLI, sem terminal interativo?". Ordem: Claude Code Agent Teams, multi-agente nativo do Codex, Antigravity Teamwork. Conforme o resultado, o escopo abaixo pode encolher, principalmente mensageria e ciclo de vida de workers. Nada aqui vira infraestrutura genérica de time sem evidência de necessidade.
+>
+> Duas entregas deste marco **já foram puxadas para o M3**, porque o failover depende delas: `ProcessSupervisor` mínimo (M2.3) e `buildWorkerEnvironment()` (M2.22).
+
 - `WorktreeManager`, `WorkerManager`, `ProcessSupervisor`, `TaskAttempt`.
 - Planner gera Tasks com dependências; graph faz fan-out/fan-in via `Send`.
 - Limites `maxGlobalWorkers` e `maxWorkersPerProvider`.
@@ -87,6 +98,14 @@ E adiando:
 
 ### M3 — Multi-provider e failover (≈ Phases 4, 5 e 8 — a parte mais valiosa)
 
+> ✅ **Concluído.** Failover real observado: Codex sem quota → handover → Claude Code concluiu, sem intervenção humana. Detalhes no gate do M3 do TECHNICAL_PLAN.md. **Próximo:** M2, começando pelo triage de engines externos (M2.0).
+>
+> **Roda antes do M2 (ADR 0003)**, em cima do `SingleAgentEngine` do M1, com uma Task por Feature. Ajustes por causa disso:
+> - **Entra:** `ProcessSupervisor` mínimo (M2.3: process group, timeout, kill da árvore) e `buildWorkerEnvironment()` (M2.22), puxados do M2. O failover troca o processo do worker; sem isso, ele roda sem allowlist de environment.
+> - **Sai, e vai para depois do M2:** PO/CTO no `team.yaml` e `questionPolicy`. Os dois dependem do `RoleRegistry` e das perguntas bloqueantes do M2.
+> - **Gemini:** o `GeminiCliHarness` segue bloqueado na autenticação (`spikes/gemini.md`). O failover é validado entre Claude Code e Codex. O Gemini entra quando a autenticação for resolvida, sem bloquear o marco.
+> - **Evidência a favor da prioridade:** durante a validação do M1, o Codex bateu no limite de uso no meio de uma Feature real. É exatamente o cenário que este marco resolve.
+
 - Terceiro adapter, `GeminiCliHarness` — `ClaudeCodeHarness` e `CodexHarness` já vêm validados do M1. Testes de contrato nos três: execute, cancel, timeout, falha, resultado estruturado.
 - Detecção reativa de quota/rate limit via `CapacityCollector` **dentro de cada harness** (`packages/harnesses/<provider>/`, nunca em `packages/routing`), `ProviderCapacitySnapshot` com `unknown` como padrão, `apo providers`.
 - `TaskHandover`, reroute automático, `RuleBasedRouter` (capacity-aware, regra 80% vs 40% da seção 18).
@@ -94,7 +113,7 @@ E adiando:
 - A política de workspace é estendida ao reroute: worktree e branch são preservados na troca de worker.
 - **PO e CTO ficam configuráveis** no `team.yaml` (ver seção 4.6 abaixo): `questionPolicy` por role decide se uma pergunta bloqueante (seção 4.2) é resolvida pelo Lead, pelo PO, pelo CTO ou escalada ao humano.
 
-**Aceite:** simular rate limit no meio de uma Task. Handover é gerado e outro provider conclui, sem intervenção humana. Uma Task com `questionPolicy.scope: human` escala ao humano em vez do Lead decidir sozinho.
+**Aceite:** simular rate limit no meio de uma Task. Handover é gerado e outro provider conclui, sem intervenção humana. (O critério de `questionPolicy` foi para depois do M2, junto com a entrega correspondente.)
 
 ---
 
@@ -482,12 +501,44 @@ AgentInbox/mailbox (M2)  → comunicação real entre roles, assíncrona e audit
 
 ---
 
+### 4.7 APO como control plane sobre execution engines (proposto — ADR 0003)
+
+Hoje existem runtimes que já fazem parte do trabalho de "time de agentes": Claude Code Agent Teams, o multi-agente nativo do Codex e plugins de terceiros sobre ele, e o Antigravity Teamwork. Não vale competir com eles sem necessidade. A regra nova:
+
+> **O APO decide o quê executar, onde e sob quais políticas. O engine decide como a execução acontece internamente.**
+
+```text
+                         APO — control plane
+     Project · Feature · Memória · Políticas · Aprovações
+     Capacidade · Jev · Observabilidade · Histórico
+
+                    ExecutionStrategyRouter
+          ┌────────────────┼─────────────────────┐
+          ▼                ▼                     ▼
+   SingleAgentEngine   ApoNativeEngine     Engine externo
+   (graph do M1,       (DAG multi-task,    (adiado — só entra
+    1 Task, 1 harness)  provider por Task,  se passar no critério
+                        failover — M2+M3)   do ADR 0003)
+          │                │
+      AgentHarness     vários AgentHarness
+```
+
+- `AgentHarness` não muda: continua sendo a unidade "um coding agent".
+- `SingleAgentEngine` **já existe na prática**: é o graph do M1. Não há código novo para "criar" esse engine.
+- O contrato `ExecutionEngine` **só vira código quando existir um segundo engine real.** Uma interface com uma implementação só seria abstração sem uso (regra 3 do PLAN.md).
+- **Limitação aceita:** uma Feature entregue a um engine externo perde o failover entre providers do APO, porque não há handover para dentro da caixa-preta de outro runtime. Por isso nenhum engine externo substitui o `ApoNativeEngine` em Features que dependem do failover.
+- LangGraph continua para o control plane e para os engines nativos. Um engine externo seria só um node que dispara, acompanha e coleta o resultado, sem replicar a state machine dele.
+- Roteamento em dois níveis (engine por Feature, provider por Task) fica preparado conceitualmente. Sem heurística na V1: o engine é sempre o `SingleAgentEngine` até existir outro.
+
+---
+
 ## 5. Decisões tomadas
 
 1. **Harnesses do M1: Claude Code e Codex, os dois.** Não escolher um só — ver justificativa e impacto no M1 e M3 acima. Gemini fica para o M3.
 2. **Ambiente de desenvolvimento: Mac**, com repos descartáveis até o M4. VM do homelab entra no M6.
 3. **Acesso ao Jev: já existe.** Endpoint e API key serão fornecidos pelo usuário quando o M5 começar — ver aviso na seção do M5.
 4. **Workers de execução continuam efêmeros.** Considerado e descartado tornar frontend/backend/QA/reviewer persistentes — ver seção 4.6 para a justificativa completa (paralelismo, troca de provider, custo de contexto). Só Lead/PO/CTO são persistentes (identidade+memória+thread, nunca um processo sempre ligado).
+5. **APO como control plane, failover antes do DAG** (pós-M1, ADR 0003 ainda "proposto"). Introduzido o conceito de `ExecutionEngine` acima do `AgentHarness` (seção 4.7). Na ordem de execução, o M3 (failover) vem antes do M2 (DAG multi-task). O M2 fica congelado até um triage de 1–2 horas, feito pelo agente, sobre os runtimes externos de agent teams. Considerado e descartado: um "M0.5" com benchmark completo de 4 runtimes × 6 cenários antes de qualquer outro trabalho. O custo era alto, os runtimes são experimentais e mudam rápido, e nenhuma Feature real precisa deles hoje. Nada do M0/M1 foi removido.
 
 ---
 

@@ -1,5 +1,6 @@
 import type { HarnessId, ProviderId } from "@apo/domain";
-import { execa } from "execa";
+import { detectLimitFailure } from "../limit-detection.js";
+import { runSupervisedProcess } from "../run-process.js";
 import type {
   AgentCapabilities,
   AgentExecutionInput,
@@ -7,6 +8,7 @@ import type {
   AgentHarness,
   ResumeExecutionInput,
 } from "../types.js";
+import { buildWorkerEnvironment } from "../worker-env.js";
 import { buildCodexArgs } from "./build-args.js";
 import {
   classifyCodexFailure,
@@ -54,14 +56,14 @@ async function run(
       ...(resumeThreadId !== undefined ? { resumeThreadId } : {}),
     });
 
-    const result = await execa("codex", args, {
+    const result = await runSupervisedProcess({
+      file: "codex",
+      args,
       cwd: input.cwd,
-      // Confirmado no spike: sem stdin fechado, `codex exec` trava esperando EOF.
-      stdin: "ignore",
-      timeout: input.timeoutMs,
-      cancelSignal: signal,
-      killDescendants: true,
-      reject: false,
+      env: input.env ?? buildWorkerEnvironment(),
+      timeoutMs: input.timeoutMs,
+      signal,
+      logPath: input.logPath,
     });
 
     const durationMs = Date.now() - startedAt;
@@ -73,7 +75,7 @@ async function run(
         durationMs,
       };
     }
-    if (result.isCanceled) {
+    if (result.canceled) {
       return {
         outcome: "failure",
         failure: { kind: "cancelled", message: "Cancelado via AbortSignal" },
@@ -97,7 +99,7 @@ async function run(
     if (result.failed) {
       return {
         outcome: "failure",
-        failure: {
+        failure: detectLimitFailure(`${result.stderr}\n${result.stdout}`) ?? {
           kind: "crash",
           message:
             result.stderr.length > 0

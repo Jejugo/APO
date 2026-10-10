@@ -1,13 +1,16 @@
 import type {
   EventRepository,
   FeatureRepository,
+  HandoverRepository,
   ProjectAgentRepository,
   ProjectRepository,
+  RoutingDecisionRepository,
   TaskAttemptRepository,
   TaskRepository,
 } from "@apo/db";
 import type { Logger } from "@apo/observability";
-import type { HarnessRegistry } from "@apo/orchestrator";
+import type { TargetRegistry } from "@apo/orchestrator";
+import type { CapacityMonitor, RoutingPolicy } from "@apo/routing";
 import type { FeatureRunner } from "./feature-runner.js";
 
 export interface ServerDeps {
@@ -18,7 +21,11 @@ export interface ServerDeps {
   tasks: TaskRepository;
   taskAttempts: TaskAttemptRepository;
   events: EventRepository;
+  routingDecisions: RoutingDecisionRepository;
+  handovers: HandoverRepository;
   featureRunner: FeatureRunner;
-  harnessRegistry: HarnessRegistry;
+  targets: TargetRegistry;
+  capacity: CapacityMonitor;
+  routingPolicy: RoutingPolicy;
   worktreesRoot: string;
 }

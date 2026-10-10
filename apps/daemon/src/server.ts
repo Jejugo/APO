@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { ZodError } from "zod";
 import { registerFeatureRoutes } from "./routes/features.js";
 import { registerProjectRoutes } from "./routes/projects.js";
+import { registerProviderRoutes } from "./routes/providers.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import type { ServerDeps } from "./server-deps.js";
 
@@ -33,6 +34,7 @@ export function buildServer(deps: ServerDeps) {
   registerProjectRoutes(app, deps);
   registerFeatureRoutes(app, deps);
   registerTaskRoutes(app, deps);
+  registerProviderRoutes(app, deps);
 
   return app;
 }

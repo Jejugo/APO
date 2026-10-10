@@ -1,11 +1,14 @@
-import { and, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import type { Db } from "./connection.js";
 import {
   events,
   type featureStatusEnum,
   features,
+  handovers,
   projectAgents,
   projects,
+  providerCapacity,
+  routingDecisions,
   type taskAttemptStatusEnum,
   taskAttempts,
   type taskStatusEnum,
@@ -63,6 +66,15 @@ export class FeatureRepository {
     return this.db.select().from(features).where(eq(features.projectId, projectId));
   }
 
+  updateExecutionPreference(id: string, executionPreference: unknown) {
+    return this.db
+      .update(features)
+      .set({ executionPreference, updatedAt: new Date() })
+      .where(eq(features.id, id))
+      .returning()
+      .then(([row]) => row);
+  }
+
   /** Global, não restrito a um Project — usado na recovery do daemon (M1.13). */
   listByStatuses(statuses: FeatureStatus[]) {
     return this.db.select().from(features).where(inArray(features.status, statuses));
@@ -103,7 +115,12 @@ export class TaskRepository {
 
   update(
     id: string,
-    changes: Partial<{ status: TaskStatus; worktreePath: string; branch: string }>,
+    changes: Partial<{
+      status: TaskStatus;
+      worktreePath: string;
+      branch: string;
+      executionPreference: unknown;
+    }>,
   ) {
     return this.db
       .update(tasks)
@@ -143,7 +160,11 @@ export class TaskAttemptRepository {
   }
 
   listByTask(taskId: string) {
-    return this.db.select().from(taskAttempts).where(eq(taskAttempts.taskId, taskId));
+    return this.db
+      .select()
+      .from(taskAttempts)
+      .where(eq(taskAttempts.taskId, taskId))
+      .orderBy(asc(taskAttempts.n));
   }
 
   update(
@@ -151,6 +172,7 @@ export class TaskAttemptRepository {
     changes: Partial<{
       status: TaskAttemptStatus;
       failureKind: string | null;
+      failureMessage: string | null;
       pid: number | null;
       endedAt: Date;
     }>,
@@ -195,6 +217,74 @@ export class ProjectAgentRepository {
 
   listByProject(projectId: string) {
     return this.db.select().from(projectAgents).where(eq(projectAgents.projectId, projectId));
+  }
+}
+
+type ProviderCapacityRow = typeof providerCapacity.$inferSelect;
+
+export class ProviderCapacityRepository {
+  constructor(private readonly db: Db) {}
+
+  upsert(row: typeof providerCapacity.$inferInsert) {
+    const { provider: _provider, ...rest } = row;
+    return this.db
+      .insert(providerCapacity)
+      .values(row)
+      .onConflictDoUpdate({ target: providerCapacity.provider, set: rest })
+      .returning()
+      .then(([saved]) => saved);
+  }
+
+  list(): Promise<ProviderCapacityRow[]> {
+    return this.db.select().from(providerCapacity);
+  }
+}
+
+export class RoutingDecisionRepository {
+  constructor(private readonly db: Db) {}
+
+  insert(row: typeof routingDecisions.$inferInsert) {
+    return this.db
+      .insert(routingDecisions)
+      .values(row)
+      .returning()
+      .then(([saved]) => saved);
+  }
+
+  listByTask(taskId: string) {
+    return this.db
+      .select()
+      .from(routingDecisions)
+      .where(eq(routingDecisions.taskId, taskId))
+      .orderBy(asc(routingDecisions.createdAt));
+  }
+}
+
+export class HandoverRepository {
+  constructor(private readonly db: Db) {}
+
+  create(row: typeof handovers.$inferInsert) {
+    return this.db
+      .insert(handovers)
+      .values(row)
+      .returning()
+      .then(([saved]) => saved);
+  }
+
+  getById(id: string) {
+    return this.db
+      .select()
+      .from(handovers)
+      .where(eq(handovers.id, id))
+      .then(([row]) => row);
+  }
+
+  listByTask(taskId: string) {
+    return this.db
+      .select()
+      .from(handovers)
+      .where(eq(handovers.taskId, taskId))
+      .orderBy(asc(handovers.createdAt));
   }
 }
 

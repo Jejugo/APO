@@ -13,6 +13,16 @@ routing:
 limits:
   maxGlobalWorkers: 4
   maxWorkersPerProvider: 2
+providers:
+  maxAttemptsPerTask: 3
+  unknownResetRetryMinutes: 30
+  targets:
+    - id: claude-code
+      harness: claude-code
+      provider: anthropic
+    - id: codex
+      harness: codex
+      provider: openai
 `;
 
 export function registerInitCommand(program: Command): void {

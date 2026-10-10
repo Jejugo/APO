@@ -96,10 +96,11 @@ Consequências:
 ### 3.1 Princípios de execução
 
 1. **A CLI não tem lógica de negócio.** Ela traduz argumentos em chamadas HTTP e formata respostas. `apo logs -f` consome o SSE.
-2. **Uma Feature = uma thread do LangGraph.** `thread_id = featureId`. O checkpointer guarda o `FeatureState`. As tabelas de domínio guardam a verdade consultável (Task, attempts, resultados).
+2. **Uma Feature = uma thread do LangGraph, nos engines nativos.** `thread_id = featureId`. O checkpointer guarda o `FeatureState`. As tabelas de domínio guardam a verdade consultável (Task, attempts, resultados). Um engine externo (ADR 0003, ainda proposto) não teria thread do LangGraph: o APO guardaria só `externalExecutionId`.
 3. **Workers são filhos do daemon.** Cada worker roda num process group próprio, para que cancelar mate a árvore inteira (o CLI e o que ele disparou, como `pnpm test`).
 4. **Restart do daemon mata os workers.** Na V1, não tentamos reatar processos órfãos. Na volta, todo attempt `working` vira `interrupted` e a Task é retomada **pelo mesmo mecanismo de handover do failover** (seção 6.4). Um mecanismo único cobre crash, quota e restart.
 5. **Git é a fonte de verdade do trabalho.** O que o agente diz que fez é só um indício. O que conta é o diff, os commits na branch da Task e os quality gates (regras 8 e 9 do PLAN.md).
+6. **O APO decide o quê, onde e sob quais políticas; o engine decide como** (ADR 0003, proposto). O graph do M1 é o `SingleAgentEngine`. O contrato `ExecutionEngine` (seção 6.10) só vira código quando existir um segundo engine real. Nenhuma infraestrutura genérica de time (mensageria, ciclo de vida de teammates) é construída sem evidência de necessidade.
 
 ### 3.2 Diretórios
 
@@ -562,6 +563,26 @@ roles:
 
 ---
 
+### 6.10 `ExecutionEngine` (proposto — ADR 0003, não implementado)
+
+Abstração acima do `AgentHarness`: a estratégia que executa uma Feature inteira. O `AgentHarness` (seção 6.1) não muda.
+
+```ts
+interface ExecutionEngine {
+  id: string;
+  getCapabilities(): EngineCapabilities;
+  execute(input: EngineExecutionInput): Promise<ExecutionHandle>;
+  getStatus(handle: ExecutionHandle): Promise<ExecutionStatus>;
+  cancel(handle: ExecutionHandle): Promise<void>;
+}
+```
+
+**Esse esboço não é contrato.** Ele só vira código quando um segundo engine real existir, seja o `ApoNativeEngine` (DAG do M2) ou um externo que passe no critério do ADR 0003. Com um único engine, a interface seria abstração sem uso (regra 3 do PLAN.md). Até lá:
+
+- O `SingleAgentEngine` é o graph do M1 (`packages/orchestrator/src/feature-graph.ts`), chamado direto pelo `FeatureRunner` (`apps/daemon`).
+- Quando entrar o segundo engine, o `FeatureRunner` passa a escolher o engine via um `ExecutionStrategyRouter`, e o schema ganha algo como `feature_executions(feature_id, engine_id, status, external_execution_id, graph_thread_id)`, com `graph_thread_id` nullable, já que só engines baseados em LangGraph o têm.
+- O estado interno de um engine externo nunca é replicado no APO. Fica só a referência (`external_execution_id`) e o último status conhecido.
+
 ## 7. Estratégia de testes
 
 | Camada | O que testa | Ferramentas | Nasce em |
@@ -600,6 +621,16 @@ Com ele, failover, recovery, paralelismo, conflitos de merge e loops de review s
 ## 8. Fases
 
 Convenção: cada fase lista **entregas** (numeradas, cada uma do tamanho de um commit ou PR), **testes obrigatórios** e o **gate de saída**. As estimativas estão em semanas de um dev com agentes e somam o intervalo do ROADMAP.md.
+
+**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → **M2** → M4 → M5 → M6. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
+
+| Entrega | De | Para | Motivo |
+|---|---|---|---|
+| `ProcessSupervisor` mínimo (process group, timeout, kill da árvore) | M2.3 | **M3**, como M3.0a | O failover troca o processo do worker no meio de uma Task |
+| `buildWorkerEnvironment()` | M2.22 | **M3**, como M3.0b | O failover não pode rodar o worker sem a allowlist de environment |
+| PO/CTO no `team.yaml` | M3.11 | depois do M2 | Depende do `RoleRegistry` (M2.15) |
+| `questionPolicy` por role | M3.12 | depois do M2 | Depende das perguntas bloqueantes (M2.19) |
+| `GeminiCliHarness` | M3.1 | sem marco fixo | Bloqueado na autenticação (`spikes/gemini.md`). Não bloqueia o M3: o failover é validado entre Claude Code e Codex |
 
 ---
 
@@ -706,6 +737,8 @@ Cada spike é um script em `spikes/<cli>/run.ts` que roda contra uma cópia do `
 
 ### M2 — Worktrees, workers, paralelismo e política de workspace
 
+> ⏸ **Congelado (ADR 0003). Roda depois do M3.** Ao descongelar, a entrega **M2.0** vem antes de todas as outras: triage de engines externos (1–2 horas, feito pelo agente). Para cada candidato — Claude Code Agent Teams, multi-agente nativo do Codex, Antigravity Teamwork — a pergunta é uma só: "dá para disparar, acompanhar e cancelar via CLI, sem terminal interativo?". O resultado define se o ADR 0003 passa a "aceito" e se o escopo abaixo encolhe, sobretudo M2.18–M2.21 (mensageria e perguntas bloqueantes). M2.3 e M2.22 já foram puxadas para o M3.
+
 **Objetivo:** uma Feature vira um DAG de Tasks executado em paralelo, em worktrees isoladas, e integrado numa branch. Features distintas e sem relação rodam ao mesmo tempo sem colidir; Features que colidem sempre perguntam ao usuário antes de isolar ou absorver. Cada Task carrega um role, que injeta identidade e convenções no prompt do worker que a executa, e pode trocar mensagens assíncronas com outras roles ou perguntas bloqueantes com o Lead.
 **Estimativa:** 2,5 a 4 semanas (cresceu com o `FeatureOverlapCheck`, `RoleRegistry`/`PromptBuilder`, mensageria e sanitização de environment).
 
@@ -785,11 +818,15 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 **Objetivo:** cumprir o critério central da V1. Uma Task que perde o provider no meio continua em outro, sem humano.
 **Estimativa:** 1,5 a 2,5 semanas.
 
+> **Próximo marco (ADR 0003): roda antes do M2**, em cima do `SingleAgentEngine` do M1, com uma Task por Feature e uma worktree por Feature. Tudo abaixo vale nesse contexto; a generalização para N Tasks vem com o M2. Durante a validação do M1, o Codex bateu no limite de uso no meio de uma Feature real ("You've hit your usage limit... try again at 3:58 PM"). O `CodexHarness` atual classificou isso como `crash`, não como `quota_exhausted` (confirmado em `task_attempts.failure_kind`). Não verificamos se a mensagem veio por `turn.failed` ou pelo stderr; o M3.4 começa capturando o formato exato. **Ajustar esse classificador com essa fixture real faz parte do M3.4.**
+
 #### Entregas
 
 | # | Entrega | Detalhes |
 |---|---|---|
-| M3.1 | `GeminiCliHarness` | Passa na suíte de contrato do M1.5. Fixtures de erro do spike |
+| M3.0a | `ProcessSupervisor` mínimo (vinda do M2.3) | Process group, timeout, kill da árvore, log por attempt em `~/.apo/logs/`. Hoje isso está espalhado entre o `execa` (`killDescendants`) e o `FeatureRunner`. A detecção de `stalled` fica para o M2 |
+| M3.0b | `buildWorkerEnvironment()` (vinda do M2.22) | Allowlist da seção 6.3. Hoje os harnesses repassam o `process.env` do daemon inteiro |
+| M3.1 | `GeminiCliHarness` | **Bloqueado na autenticação, não bloqueia o marco.** Passa na suíte de contrato do M1.5 quando a autenticação for resolvida |
 | M3.2 | `packages/routing`: `ProviderRegistry` | Targets disponíveis vindos do `config.yaml`: provider, harness, modelos, capacidades e limites de concorrência |
 | M3.3 | `CapacityMonitor` | Estado por provider, atualizado **de forma reativa**: `rate_limited` → `degraded` + `resetAt`; `quota_exhausted` → `exhausted`; após o `resetAt`, volta a `unknown`. `usagePercent` só é preenchido se um collector oficial existir (seção 15 do PLAN.md). Emite `provider.degraded` e `provider.exhausted` |
 | M3.4 | `CapacityCollector` por harness (seção 6.1) | Implementado dentro de `packages/harnesses/<provider>/capacity-collector.ts`, nunca em `packages/routing`. Apenas os que o spike (item 9) mostrou viáveis. Sem fonte oficial, o provider fica `unknown` |
@@ -799,8 +836,8 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 | M3.8 | Reroute automático | No node de falha: classifica o erro → atualiza a capacidade → gera o handover → Task `retrying` → resolver → novo attempt na **mesma worktree e branch**. Limite `maxAttemptsPerTask` |
 | M3.9 | `paused_capacity` | Todos os targets indisponíveis → Feature `paused_capacity` + evento. Um timer no daemon retoma ao passar o menor `resetAt`. Não chama API paga |
 | M3.10 | Comandos | `apo providers`, `apo task assign`, `apo task preference`, `apo feature preference`, `apo task reroute` (manual: pausa → handover → stop → novo target) |
-| M3.11 | `team.yaml`: PO e CTO | `ProjectAgent` para `product-owner` e `cto`, com `RoleDefinition` própria (seção 6.7/6.8). Desabilitados por padrão — o usuário habilita no `project.yaml` |
-| M3.12 | `questionPolicy` por role | Estende `RoleDefinition` (seção 6.9). Uma pergunta bloqueante passa a resolver por tópico: `lead`/`product-owner`/`cto`/`human`, em vez de sempre `lead` (comportamento do M2) |
+| M3.11 | `team.yaml`: PO e CTO | **Adiado para depois do M2** (depende do `RoleRegistry`, M2.15). `ProjectAgent` para `product-owner` e `cto`, com `RoleDefinition` própria (seção 6.7/6.8). Desabilitados por padrão — o usuário habilita no `project.yaml` |
+| M3.12 | `questionPolicy` por role | **Adiado para depois do M2** (depende das perguntas bloqueantes, M2.19). Estende `RoleDefinition` (seção 6.9). Uma pergunta bloqueante passa a resolver por tópico: `lead`/`product-owner`/`cto`/`human`, em vez de sempre `lead` (comportamento do M2) |
 
 #### Testes obrigatórios
 
@@ -810,15 +847,29 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 - Todos esgotados → `paused_capacity` → avançar o relógio → retoma.
 - Reroute manual no meio da execução preserva a worktree.
 - `forced` com target esgotado → `needs_human`, sem trocar de provider.
-- `questionPolicy`: uma pergunta de tópico com policy `human` escala direto, sem consultar nenhum `AgentRunner`; uma com policy `cto` é respondida pela persona CTO, não pelo Lead genérico.
+- `questionPolicy` (só depois do M2, junto com M3.12): uma pergunta de tópico com policy `human` escala direto, sem consultar nenhum `AgentRunner`; uma com policy `cto` é respondida pela persona CTO, não pelo Lead genérico.
+- `buildWorkerEnvironment()`: o processo do worker não enxerga `DATABASE_URL` nem nenhuma variável fora da allowlist.
+- Classificação da mensagem real de limite de uso do Codex (fixture do M1) como `quota_exhausted`, não `crash`.
 
 #### Gate de saída
 
-- [ ] O failover simulado passa sem intervenção humana.
-- [ ] `apo providers` mostra `unknown` quando não há dado. Nenhum percentual inventado.
-- [ ] Toda escolha de target tem linha em `routing_decisions` com `resolutionSource`.
-- [ ] Um failover real foi observado pelo menos uma vez com Claude Code e Codex (provocado com `apo task reroute` se a quota não acabar sozinha).
-- [ ] Uma pergunta roteada por `questionPolicy` para `cto` é respondida pela persona CTO, verificável em `agent_messages.answer`.
+- [x] O failover simulado passa sem intervenção humana (`feature-graph.test.ts`: rate limit em `fake-a` → handover → `fake-b` conclui, e o trabalho de A continua na branch).
+- [x] `apo providers` mostra `unknown` quando não há dado. Nenhum percentual inventado ("uso: desconhecido").
+- [x] Toda escolha de target tem linha em `routing_decisions` com `resolutionSource` (visível em `apo task show`).
+- [x] Um failover real foi observado com Claude Code e Codex, **sem precisar provocar**: o Codex estava de fato sem quota. `apo run --prefer codex` → attempt 1 no Codex falhou com `quota_exhausted` (resetAt 02:27 extraído da mensagem real) → handover → attempt 2 no Claude Code concluiu, com os testes passando na branch. O reroute manual (`apo task reroute`) foi validado só com `FakeHarness`: com o Codex esgotado, não havia um segundo provider real disponível para trocar.
+- [x] O worker roda com a allowlist de environment, nunca com o `process.env` do daemon. A autenticação OAuth dos dois CLIs funciona com a allowlist (Claude Code completou Features reais; Codex autenticou e só parou no limite de uso).
+- [ ] ~~Uma pergunta roteada por `questionPolicy` para `cto` é respondida pela persona CTO~~ — movido para depois do M2, junto com M3.12.
+
+**Fora do M3 por decisão:**
+- **Camada semântica do handover** (opcional pela seção 6.4) — só a determinística existe: diff, arquivos alterados, falhas e última mensagem.
+- `commandsRun`/`testsRun` ficam vazios, porque extraí-los exigiria um parser por CLI.
+- `apo task assign`, `apo task preference`: cobertos por `apo task reroute` e `apo feature preference`.
+- Detecção de `stalled`: fica para o `ProcessSupervisor` completo do M2.
+- `CapacityCollector` proativo (M3.4): nenhum dos dois CLIs expõe uso agregado (spikes M0.9/M0.10). A capacidade é só reativa, a partir das falhas classificadas.
+
+**Achados reais da validação do M3:**
+- A mensagem de limite do Codex vem em dois formatos de horário: "try again at 3:58 PM" e "try again at Oct 10th, 2026 2:27 AM". Os dois agora viram `quota_exhausted` com `resetAt` correto. Antes, os dois viravam `crash` e o failover nunca disparava.
+- O forced do `--harness` não deve valer para o Lead, que só faz julgamento. Com o provider forçado esgotado, ele barrava a criação da Feature com 503, em vez de a Feature ir para `needs_human`. O Lead agora trata a escolha como preferência.
 
 ---
 

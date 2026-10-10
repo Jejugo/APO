@@ -42,6 +42,9 @@ export interface AgentExecutionInput {
    * de retry no Codex). Sem timeout, isso trava um worker indefinidamente. */
   timeoutMs: number;
   logPath: string;
+  /** Environment completo do processo do CLI. Ausente → `buildWorkerEnvironment()`
+   * (allowlist). Nunca é o `process.env` do daemon (seção 6.3). */
+  env?: Record<string, string>;
 }
 
 export interface ResumeExecutionInput extends AgentExecutionInput {

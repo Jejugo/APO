@@ -5,6 +5,7 @@
 // `turn.failed` cujo `error.message` é uma STRING contendo um JSON aninhado:
 //   {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"..."}}
 
+import { detectLimitFailure } from "../limit-detection.js";
 import type { AgentFailure } from "../types.js";
 
 export interface CodexEvent {
@@ -62,5 +63,7 @@ export function classifyCodexFailure(event: CodexEvent): AgentFailure {
   if (status === 429) {
     return { kind: "rate_limited", message };
   }
-  return { kind: "crash", message };
+  // Limite de uso da conta ChatGPT chega como texto puro, sem status
+  // (fixture real da validação do M1 — antes virava "crash" e não havia failover).
+  return detectLimitFailure(message) ?? { kind: "crash", message };
 }

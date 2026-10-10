@@ -1,24 +1,52 @@
 import { randomUUID } from "node:crypto";
-import type { HarnessId } from "@apo/domain";
+import type { ExecutionPreference } from "@apo/domain";
 import { emitEvent } from "@apo/observability";
 import {
   AgentRunnerImpl,
   DEFAULT_TASK_TIMEOUT_MS,
-  resolveHarness,
+  candidatesOf,
+  findTarget,
   triageIntent,
 } from "@apo/orchestrator";
+import { resolveExecutionTarget } from "@apo/routing";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ServerDeps } from "../server-deps.js";
 
+const harnessSchema = z.enum(["claude-code", "codex", "gemini-cli", "fake"]);
+const providerSchema = z.enum(["anthropic", "openai", "google"]);
+
+// M3: `--harness` deixou de ser obrigatório. Sem preferência, o RuleBasedRouter
+// escolhe por capacidade; `harness` = forced, `prefer` = preferred.
 const createFeatureSchema = z.object({
   projectId: z.string().min(1),
   objective: z.string().min(1),
   as: z.enum(["question", "bugfix", "feature"]).optional(),
-  harness: z.enum(["claude-code", "codex", "gemini-cli", "fake"]),
+  harness: harnessSchema.optional(),
+  prefer: harnessSchema.optional(),
+});
+
+const preferenceSchema = z.object({
+  mode: z.enum(["forced", "preferred", "auto"]),
+  harness: harnessSchema.optional(),
+  provider: providerSchema.optional(),
 });
 
 const answerSchema = z.object({ answer: z.string() });
+
+const TERMINAL_STATUSES = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+  "paused_capacity",
+  "needs_human",
+]);
+
+function preferenceFrom(body: { harness?: string | undefined; prefer?: string | undefined }) {
+  if (body.harness) return { mode: "forced", harness: body.harness } as ExecutionPreference;
+  if (body.prefer) return { mode: "preferred", harness: body.prefer } as ExecutionPreference;
+  return undefined;
+}
 
 export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): void {
   app.post("/features", async (request, reply) => {
@@ -29,8 +57,30 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       return { error: "project não encontrado" };
     }
 
-    const harness = resolveHarness(deps.harnessRegistry, body.harness);
-    const agentRunner = new AgentRunnerImpl(harness);
+    const preference = preferenceFrom(body);
+
+    // O Lead (IntentTriage e perguntas) também é roteado por capacidade:
+    // com o Codex esgotado, uma pergunta não deve falhar se o Claude Code estiver livre.
+    // `--harness` (forced) diz onde o *worker* roda. Para o Lead, que só faz
+    // julgamento (triage/pergunta), a escolha do usuário vale só como
+    // preferência — senão um forced num provider esgotado barraria a criação
+    // da Feature, em vez de ela ir para needs_human como o modo forced pede.
+    const leadTarget = resolveExecutionTarget({
+      candidates: candidatesOf(deps.targets),
+      capacity: (provider) => deps.capacity.get(provider),
+      featurePreference: preference ? { ...preference, mode: "preferred" } : null,
+      policy: deps.routingPolicy,
+    });
+    if (leadTarget.kind !== "target") {
+      reply.code(503);
+      return { error: "nenhum provider disponível para o Lead agora", reason: leadTarget.reason };
+    }
+    const leadEntry = findTarget(deps.targets, leadTarget.target.targetId);
+    if (!leadEntry) {
+      reply.code(500);
+      return { error: "target do Lead sem harness registrado" };
+    }
+    const agentRunner = new AgentRunnerImpl(leadEntry.harness);
     const controller = new AbortController();
 
     const triage = await triageIntent(
@@ -48,9 +98,7 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       const result = await agentRunner.run(
         "lead",
         {
-          prompt:
-            `Responda à pergunta do usuário usando leitura do repositório em ${project.repoPath}. ` +
-            `Pergunta: "${body.objective}"`,
+          prompt: `Responda à pergunta do usuário usando leitura do repositório em ${project.repoPath}. Pergunta: "${body.objective}"`,
           cwd: project.repoPath,
           schema: answerSchema,
           timeoutMs: DEFAULT_TASK_TIMEOUT_MS,
@@ -59,6 +107,9 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       );
 
       if (result.outcome !== "success" || !result.output) {
+        if (result.failure) {
+          deps.capacity.recordFailure(leadEntry.harness.provider, result.failure);
+        }
         reply.code(502);
         return { error: "Lead não conseguiu responder", failure: result.failure };
       }
@@ -66,7 +117,11 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       await emitEvent(deps.events, deps.logger, {
         type: "query.answered",
         projectId: project.id,
-        payload: { objective: body.objective, answer: result.output.answer },
+        payload: {
+          objective: body.objective,
+          answer: result.output.answer,
+          target: leadEntry.candidate.targetId,
+        },
       });
 
       return { intent: "question" as const, answer: result.output.answer };
@@ -77,7 +132,7 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       projectId: project.id,
       objective: body.objective,
       intent: triage.intent,
-      executionPreference: { mode: "forced", harness: body.harness },
+      ...(preference ? { executionPreference: preference } : {}),
     });
     if (!feature) {
       reply.code(500);
@@ -91,7 +146,6 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
         repoPath: project.repoPath,
         defaultBranch: project.defaultBranch,
         objective: body.objective,
-        harness: body.harness,
         worktreesRoot: deps.worktreesRoot,
       })
       .catch((error: unknown) => {
@@ -125,6 +179,36 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
     return deps.tasks.listByFeature(id);
   });
 
+  // M3.10 — `apo feature preference`. Vale para o próximo attempt (não
+  // interrompe o atual; para isso existe `apo task reroute`).
+  app.post("/features/:id/preference", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = preferenceSchema.parse(request.body);
+    if (body.mode !== "auto" && !body.harness && !body.provider) {
+      reply.code(400);
+      return { error: "modo forced/preferred precisa de harness ou provider" };
+    }
+    const preference: ExecutionPreference | null =
+      body.mode === "auto"
+        ? null
+        : {
+            mode: body.mode,
+            ...(body.harness ? { harness: body.harness } : {}),
+            ...(body.provider ? { provider: body.provider } : {}),
+          };
+    const feature = await deps.features.updateExecutionPreference(id, preference);
+    if (!feature) {
+      reply.code(404);
+      return { error: "feature não encontrada" };
+    }
+    await emitEvent(deps.events, deps.logger, {
+      type: "feature.preference_changed",
+      featureId: id,
+      payload: { preference },
+    });
+    return feature;
+  });
+
   app.post("/features/:id/pause", async (request, reply) => {
     const { id } = request.params as { id: string };
     const feature = await deps.features.updateStatus(id, "paused");
@@ -149,16 +233,6 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       return { error: "project não encontrado" };
     }
 
-    const executionPreference = feature.executionPreference as
-      | { harness?: HarnessId }
-      | null
-      | undefined;
-    const harness = executionPreference?.harness;
-    if (!harness) {
-      reply.code(400);
-      return { error: "sem harness anterior registrado para retomar esta feature" };
-    }
-
     await deps.features.updateStatus(id, "executing");
     await emitEvent(deps.events, deps.logger, { type: "feature.resumed", featureId: id });
 
@@ -170,7 +244,6 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
           repoPath: project.repoPath,
           defaultBranch: project.defaultBranch,
           objective: feature.objective,
-          harness,
           worktreesRoot: deps.worktreesRoot,
         })
         .catch((error: unknown) => {
@@ -213,7 +286,6 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       lastId = row.id;
     }
 
-    const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
     while (!closed) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       if (closed) {
@@ -240,9 +312,8 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       reply.code(404);
       return { error: "feature não encontrada" };
     }
-    // Só sinaliza o AbortSignal — quem escreve o status terminal ("cancelled")
-    // é sempre o node 'complete' do graph (feature-graph.ts), nunca esta rota:
-    // escrever aqui também criaria uma corrida entre as duas escritas.
+    // Só sinaliza o AttemptControl — quem escreve o status terminal
+    // ("cancelled") é sempre o node 'complete' do graph, nunca esta rota.
     const wasRunning = deps.featureRunner.cancel(id);
     await emitEvent(deps.events, deps.logger, { type: "feature.cancel_requested", featureId: id });
     return { ...feature, cancelRequested: true, wasRunning };

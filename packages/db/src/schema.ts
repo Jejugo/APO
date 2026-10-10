@@ -149,12 +149,64 @@ export const taskAttempts = pgTable("task_attempts", {
   // packages/harnesses (regra 4 do PLAN.md) — packages/db não deve depender
   // dele só para validar uma coluna.
   model: text("model"),
+  /** Id do target do `config.yaml` (M3.2) — distingue dois targets com o mesmo harness. */
+  targetId: text("target_id"),
+  resolutionSource: text("resolution_source"),
+  /** Handover recebido no início deste attempt (attempt 2+ após um failover). */
+  handoverId: text("handover_id"),
   failureKind: text("failure_kind"),
+  failureMessage: text("failure_message"),
   pid: integer("pid"),
   logPath: text("log_path"),
   status: taskAttemptStatusEnum("status").notNull().default("starting"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   endedAt: timestamp("ended_at", { withTimezone: true }),
+});
+
+// M3 — capacidade por provider (seção 15 do PLAN.md). `usage_percent` só é
+// preenchido quando existir fonte oficial; nunca inventado.
+export const providerAvailabilityEnum = pgEnum("provider_availability", [
+  "available",
+  "degraded",
+  "exhausted",
+  "unknown",
+]);
+
+export const providerCapacity = pgTable("provider_capacity", {
+  provider: providerEnum("provider").primaryKey(),
+  availability: providerAvailabilityEnum("availability").notNull().default("unknown"),
+  usagePercent: integer("usage_percent"),
+  resetAt: timestamp("reset_at", { withTimezone: true }),
+  reason: text("reason"),
+  capturedAt: timestamp("captured_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Toda escolha de target vira uma linha aqui (regra 7 do PLAN.md).
+export const routingDecisions = pgTable("routing_decisions", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id),
+  router: text("router").notNull(),
+  resolutionSource: text("resolution_source").notNull(),
+  input: jsonb("input"),
+  output: jsonb("output"),
+  finalTarget: jsonb("final_target"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Seção 6.4 do TECHNICAL_PLAN.md — camada determinística no M3; a semântica
+// (via AgentRunner) é opcional e fica para depois.
+export const handovers = pgTable("handovers", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id),
+  fromAttemptId: text("from_attempt_id")
+    .notNull()
+    .references(() => taskAttempts.id),
+  payload: jsonb("payload").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const events = pgTable("events", {

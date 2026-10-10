@@ -17,6 +17,7 @@
     "@apo/domain": "workspace:*",
     "@apo/harnesses": "workspace:*",
     "@apo/observability": "workspace:*",
+    "@apo/routing": "workspace:*",
     "@langchain/langgraph": "^1.4.21",
     "execa": "^10.1.0",
     "zod": "^3.25.76",

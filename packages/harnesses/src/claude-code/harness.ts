@@ -1,5 +1,6 @@
 import type { HarnessId, ProviderId } from "@apo/domain";
-import { execa } from "execa";
+import { detectLimitFailure } from "../limit-detection.js";
+import { runSupervisedProcess } from "../run-process.js";
 import type {
   AgentCapabilities,
   AgentExecutionInput,
@@ -7,6 +8,7 @@ import type {
   AgentHarness,
   ResumeExecutionInput,
 } from "../types.js";
+import { buildWorkerEnvironment } from "../worker-env.js";
 import { buildClaudeCodeArgs } from "./build-args.js";
 import { type ClaudeCodeResultJson, classifyClaudeCodeFailure } from "./classify-failure.js";
 
@@ -40,14 +42,14 @@ async function run(
 ): Promise<AgentExecutionResult> {
   const startedAt = Date.now();
 
-  const result = await execa("claude", args, {
+  const result = await runSupervisedProcess({
+    file: "claude",
+    args,
     cwd: input.cwd,
-    // Confirmado no spike: sem stdin fechado, o CLI pode esperar por EOF.
-    stdin: "ignore",
-    timeout: input.timeoutMs,
-    cancelSignal: signal,
-    killDescendants: true,
-    reject: false,
+    env: input.env ?? buildWorkerEnvironment(),
+    timeoutMs: input.timeoutMs,
+    signal,
+    logPath: input.logPath,
   });
 
   const durationMs = Date.now() - startedAt;
@@ -59,7 +61,7 @@ async function run(
       durationMs,
     };
   }
-  if (result.isCanceled) {
+  if (result.canceled) {
     return {
       outcome: "failure",
       failure: { kind: "cancelled", message: "Cancelado via AbortSignal" },
@@ -71,11 +73,12 @@ async function run(
   try {
     json = JSON.parse(result.stdout) as ClaudeCodeResultJson;
   } catch {
+    const raw = `${result.stdout}\n${result.stderr}`;
     return {
       outcome: "failure",
-      failure: {
+      failure: detectLimitFailure(raw) ?? {
         kind: "crash",
-        message: `Saída não é JSON válido (exit ${result.exitCode}): ${result.stdout.slice(0, 500)}`,
+        message: `Saída não é JSON válido (exit ${result.exitCode}): ${raw.slice(0, 500)}`,
       },
       durationMs,
     };

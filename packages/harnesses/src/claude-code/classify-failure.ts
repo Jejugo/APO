@@ -5,6 +5,7 @@
 //   modelo inexistente  → { is_error: true, api_error_status: 404, result: "..." }
 //   credencial inválida → { is_error: true, api_error_status: 401, result: "Invalid API key · Fix external API key" }
 
+import { detectLimitFailure } from "../limit-detection.js";
 import type { AgentFailure } from "../types.js";
 
 export interface ClaudeCodeResultJson {
@@ -35,6 +36,11 @@ export function classifyClaudeCodeFailure(json: ClaudeCodeResultJson): AgentFail
   }
   if (status === 429) {
     return { kind: "rate_limited", message };
+  }
+  // Limite da assinatura pode vir sem status numérico — só no texto.
+  const limit = detectLimitFailure(message);
+  if (limit) {
+    return limit;
   }
   // 404 (modelo inexistente) e outros status de API caem aqui — são erros de
   // configuração/execução, não condições retomáveis automaticamente.

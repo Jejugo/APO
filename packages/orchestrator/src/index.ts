@@ -17,8 +17,14 @@ export type {
 export { buildFeatureGraph, DEFAULT_TASK_TIMEOUT_MS, FeatureGraphState } from "./feature-graph.js";
 export type { FeatureGraph, FeatureGraphDeps, FeatureGraphInput } from "./feature-graph.js";
 
-export { resolveHarness } from "./harness-registry.js";
-export type { HarnessRegistry } from "./harness-registry.js";
+export { candidatesOf, findTarget } from "./harness-registry.js";
+export type { ExecutionTargetEntry, TargetRegistry } from "./harness-registry.js";
+
+export { AttemptControl, abortReasonOf } from "./attempt-control.js";
+export type { AttemptAbortReason } from "./attempt-control.js";
+
+export { buildHandover, renderHandoverForPrompt } from "./handover.js";
+export type { TaskHandoverPayload } from "./handover.js";
 
 export { ensureFeatureWorktree, featureBranch, hasNewCommits } from "./worktree.js";
 export type { FeatureWorktree } from "./worktree.js";

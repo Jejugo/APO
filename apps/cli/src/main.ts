@@ -6,6 +6,7 @@ import { registerFeatureCommands } from "./commands/feature.js";
 import { registerInitCommand } from "./commands/init.js";
 import { registerLogsCommand } from "./commands/logs.js";
 import { registerProjectCommands } from "./commands/project.js";
+import { registerProvidersCommand } from "./commands/providers.js";
 import { registerRunCommand } from "./commands/run.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerTaskCommands } from "./commands/task.js";
@@ -23,6 +24,7 @@ registerTaskCommands(program);
 registerLogsCommand(program);
 registerStatusCommand(program);
 registerControlCommands(program);
+registerProvidersCommand(program);
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   if (error instanceof DaemonUnavailableError) {

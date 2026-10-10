@@ -36,4 +36,25 @@ export function registerFeatureCommands(program: Command): void {
       const row = await daemonRequest<FeatureRow>(`/features/${id}`);
       console.log(JSON.stringify(row, null, 2));
     });
+
+  feature
+    .command("preference <id>")
+    .description("Define a preferência de execução da Feature (vale a partir do próximo attempt)")
+    .requiredOption("--mode <mode>", "forced | preferred | auto")
+    .option("--harness <harness>", "claude-code | codex")
+    .option("--provider <provider>", "anthropic | openai | google")
+    .action(async (id: string, options: { mode: string; harness?: string; provider?: string }) => {
+      const row = await daemonRequest<FeatureRow & { executionPreference: unknown }>(
+        `/features/${id}/preference`,
+        {
+          method: "POST",
+          body: {
+            mode: options.mode,
+            ...(options.harness ? { harness: options.harness } : {}),
+            ...(options.provider ? { provider: options.provider } : {}),
+          },
+        },
+      );
+      console.log(`Preferência de ${row.id}: ${JSON.stringify(row.executionPreference ?? "auto")}`);
+    });
 }

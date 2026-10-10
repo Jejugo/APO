@@ -26,3 +26,11 @@ export {
 } from "./codex/classify-failure.js";
 
 export { FakeHarness, type FakeHarnessOptions, type FakeHarnessStep } from "./fake/fake-harness.js";
+
+export { detectLimitFailure, parseResetAt } from "./limit-detection.js";
+export {
+  runSupervisedProcess,
+  type SupervisedProcessInput,
+  type SupervisedProcessResult,
+} from "./run-process.js";
+export { buildWorkerEnvironment } from "./worker-env.js";

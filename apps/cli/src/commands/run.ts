@@ -8,7 +8,8 @@ interface FeatureRow {
 
 interface RunOptions {
   project: string;
-  harness: "claude-code" | "codex" | "gemini-cli" | "fake";
+  harness?: string;
+  prefer?: string;
   as?: "question" | "bugfix" | "feature";
 }
 
@@ -22,18 +23,22 @@ export function registerRunCommand(program: Command): void {
     // Pendente de confirmação (TECHNICAL_PLAN.md seção 11): resolução via cwd
     // ainda não foi decidida com o usuário — por isso --project é obrigatório
     // no M1, sem fallback silencioso.
-    .requiredOption(
-      "--harness <harness>",
-      "claude-code | codex — seleção de harness ainda é manual no M1",
-    )
+    .option("--harness <harness>", "força um harness (forced): claude-code | codex — sem failover")
+    .option("--prefer <harness>", "prefere um harness (preferred), com failover se indisponível")
     .option("--as <intent>", "força a classificação: question | bugfix | feature")
     .action(async (objective: string, options: RunOptions) => {
+      if (options.harness && options.prefer) {
+        console.error("Use --harness ou --prefer, não os dois.");
+        process.exitCode = 1;
+        return;
+      }
       const response = await daemonRequest<RunResponse>("/features", {
         method: "POST",
         body: {
           projectId: options.project,
           objective,
-          harness: options.harness,
+          ...(options.harness !== undefined ? { harness: options.harness } : {}),
+          ...(options.prefer !== undefined ? { prefer: options.prefer } : {}),
           ...(options.as !== undefined ? { as: options.as } : {}),
         },
       });

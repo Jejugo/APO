@@ -28,6 +28,13 @@ export const ProjectConfigSchema = z.object({
       defaultMode: WorkspaceModeSchema.default("auto"),
     })
     .default({}),
+  // Variáveis extras que o worker pode enxergar, além da allowlist base
+  // (seção 6.3 do TECHNICAL_PLAN.md). Ex.: NPM_TOKEN para um registry privado.
+  worker: z
+    .object({
+      env: z.object({ allow: z.array(z.string()).default([]) }).default({}),
+    })
+    .default({}),
 });
 
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
