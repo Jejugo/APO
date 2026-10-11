@@ -13,7 +13,7 @@ import { registerRoleCommands } from "./commands/role.js";
 import { registerRunCommand } from "./commands/run.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerTaskCommands } from "./commands/task.js";
-import { DaemonUnavailableError } from "./daemon-client.js";
+import { DaemonHttpError, DaemonUnavailableError } from "./daemon-client.js";
 
 const program = new Command();
 program.name("apo").description("Orquestrador local de agentes de código").version("0.0.0");
@@ -35,6 +35,10 @@ registerProvidersCommand(program);
 program.parseAsync(process.argv).catch((error: unknown) => {
   if (error instanceof DaemonUnavailableError) {
     console.error(error.message);
+  } else if (error instanceof DaemonHttpError) {
+    // O daemon já devolve uma mensagem legível; o stack trace só atrapalha.
+    const message = (error.body as { error?: string } | undefined)?.error;
+    console.error(message ? `Erro (${error.status}): ${message}` : error.message);
   } else {
     console.error(error);
   }
