@@ -34,6 +34,14 @@ export class ProjectRepository {
       .then(([row]) => row);
   }
 
+  getByRepoPath(repoPath: string) {
+    return this.db
+      .select()
+      .from(projects)
+      .where(eq(projects.repoPath, repoPath))
+      .then(([row]) => row);
+  }
+
   getById(id: string) {
     return this.db
       .select()

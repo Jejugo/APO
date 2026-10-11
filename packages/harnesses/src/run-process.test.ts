@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runSupervisedProcess } from "./run-process.js";
 
-describe("runSupervisedProcess — stall (M2.3)", () => {
+// Tempos com folga: sob `pnpm check` (todos os pacotes em paralelo) só subir o
+// `sh` pode levar centenas de ms. Os processos "ativos" duram 2 s, mais que a
+// tolerância de 1,5 s — sem as atividades no meio, seriam dados como travados.
+describe("runSupervisedProcess — stall (M2.3)", { timeout: 20_000 }, () => {
   const dirs: string[] = [];
   afterEach(async () => {
     for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
@@ -41,8 +44,8 @@ describe("runSupervisedProcess — stall (M2.3)", () => {
     const result = await runSupervisedProcess({
       ...base(dir),
       file: "sh",
-      args: ["-c", "for i in 1 2 3 4 5 6; do echo $i; sleep 0.15; done"],
-      stallTimeoutMs: 400,
+      args: ["-c", "for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 0.25; done"],
+      stallTimeoutMs: 1_500,
     });
     expect(result.stalled).toBe(false);
     expect(result.exitCode).toBe(0);
@@ -53,8 +56,8 @@ describe("runSupervisedProcess — stall (M2.3)", () => {
     const result = await runSupervisedProcess({
       ...base(dir),
       file: "sh",
-      args: ["-c", "for i in 1 2 3 4 5 6; do echo $i > f.txt; sleep 0.15; done"],
-      stallTimeoutMs: 400,
+      args: ["-c", "for i in 1 2 3 4 5 6 7 8; do echo $i > f.txt; sleep 0.25; done"],
+      stallTimeoutMs: 1_500,
     });
     expect(result.stalled).toBe(false);
     expect(result.exitCode).toBe(0);

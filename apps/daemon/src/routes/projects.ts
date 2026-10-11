@@ -1,16 +1,39 @@
 import { randomUUID } from "node:crypto";
-import { loadRoleRegistry } from "@apo/config";
+import { existsSync } from "node:fs";
+import { basename, isAbsolute, join } from "node:path";
+import { ProjectConfigSchema, loadConfig, loadRoleRegistry } from "@apo/config";
 import { emitEvent } from "@apo/observability";
+import { execa } from "execa";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ServerDeps } from "../server-deps.js";
 
+// A validação do repo acontece aqui, no disco do daemon: com a CLI remota
+// (Mac → VM), o caminho só existe na máquina do daemon.
 const createProjectSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).optional(),
   repoPath: z.string().min(1),
-  defaultBranch: z.string().default("main"),
+  defaultBranch: z.string().min(1).optional(),
   configSnapshot: z.record(z.string(), z.unknown()).optional(),
 });
+
+/** Branch padrão do remoto (origin/HEAD); sem remoto, a branch atual. */
+async function detectDefaultBranch(repoPath: string): Promise<string> {
+  const remote = await execa("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], {
+    cwd: repoPath,
+    reject: false,
+  });
+  if (remote.exitCode === 0 && remote.stdout.trim()) {
+    return remote.stdout.trim().replace(/^origin\//, "");
+  }
+  const current = await execa("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: repoPath,
+    reject: false,
+  });
+  return current.exitCode === 0 && current.stdout.trim() !== "HEAD"
+    ? current.stdout.trim()
+    : "main";
+}
 
 const memorySchema = z.object({
   kind: z.enum(["convention", "decision", "pattern", "failure", "correction"]),
@@ -21,12 +44,26 @@ const memorySchema = z.object({
 export function registerProjectRoutes(app: FastifyInstance, deps: ServerDeps): void {
   app.post("/projects", async (request, reply) => {
     const body = createProjectSchema.parse(request.body);
+    if (!isAbsolute(body.repoPath) || !existsSync(join(body.repoPath, ".git"))) {
+      reply.code(400);
+      return { error: `${body.repoPath} não é um repositório git nesta máquina (a do daemon)` };
+    }
+    // Idempotente: registrar o mesmo caminho de novo devolve o existente.
+    const existing = await deps.projects.getByRepoPath(body.repoPath);
+    if (existing) {
+      reply.code(200);
+      return { ...existing, existing: true };
+    }
+    const configSnapshot =
+      body.configSnapshot ??
+      loadConfig(join(body.repoPath, ".apo", "project.yaml"), ProjectConfigSchema);
+    const defaultBranch = body.defaultBranch ?? (await detectDefaultBranch(body.repoPath));
     const project = await deps.projects.create({
       id: randomUUID(),
-      name: body.name,
+      name: body.name ?? basename(body.repoPath),
       repoPath: body.repoPath,
-      defaultBranch: body.defaultBranch,
-      ...(body.configSnapshot !== undefined ? { configSnapshot: body.configSnapshot } : {}),
+      defaultBranch,
+      configSnapshot,
     });
     if (!project) {
       reply.code(500);

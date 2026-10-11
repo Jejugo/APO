@@ -30,7 +30,7 @@ import { createLogger } from "@apo/observability";
 import { CapacityMonitor } from "@apo/routing";
 import { type BaseCheckpointSaver, Command, MemorySaver } from "@langchain/langgraph";
 import { execa } from "execa";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentRunnerImpl } from "./agent-runner.js";
 import { AttemptControl } from "./attempt-control.js";
 import type { PullRequestCreator, PullRequestInput } from "./delivery.js";
@@ -45,6 +45,11 @@ import type { FeaturePlan } from "./plan.js";
 import { WORKER_CONTRACT } from "./prompt-builder.js";
 import { replanFeature } from "./replan.js";
 import { WorkerSlots } from "./worker-slots.js";
+
+// Integração de verdade (git + Postgres por teste). Com o `pnpm check` rodando
+// todos os pacotes em paralelo, o padrão de 5 s do Vitest falhava de vez em
+// quando sem nenhum defeito real.
+vi.setConfig({ testTimeout: 30_000 });
 
 type Responder = (input: AgentExecutionInput) => FakeHarnessStep | undefined;
 
@@ -1016,6 +1021,10 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
                 fail: { kind: "quota_exhausted" },
               };
             }
+            // Como na vida real: depois que a quota acaba, chamada nova também
+            // falha. (Antes o fake respondia sucesso, e uma Task que começasse
+            // depois da falha — máquina lenta — "provava" que a quota voltou.)
+            if (quotaHit) return { fail: { kind: "quota_exhausted" } };
             return work(attemptInput);
           },
           reviewer,

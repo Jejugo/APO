@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { ProjectConfigSchema, loadConfig } from "@apo/config";
 import type { Command } from "commander";
 import { daemonRequest } from "../daemon-client.js";
 
@@ -17,23 +16,25 @@ export function registerProjectCommands(program: Command): void {
 
   project
     .command("add <path>")
-    .description("Registra um repositório git como Project")
-    .action(async (pathArg: string) => {
-      const repoPath = resolve(pathArg);
-      if (!existsSync(`${repoPath}/.git`)) {
+    .description(
+      "Registra um repositório git como Project (com APO_URL, o caminho é o da máquina do daemon)",
+    )
+    .option("--branch <branch>", "branch base dos PRs (padrão: a do origin/HEAD do repo)")
+    .action(async (pathArg: string, options: { branch?: string }) => {
+      // Daemon remoto: o caminho é da VM e só o daemon consegue validá-lo.
+      const repoPath = process.env.APO_URL ? pathArg : resolve(pathArg);
+      if (!process.env.APO_URL && !existsSync(`${repoPath}/.git`)) {
         console.error(`${repoPath} não parece ser um repositório git (.git não encontrado).`);
         process.exitCode = 1;
         return;
       }
-
-      const projectConfig = loadConfig(`${repoPath}/.apo/project.yaml`, ProjectConfigSchema);
-      const name = repoPath.split("/").filter(Boolean).pop() ?? repoPath;
-
-      const created = await daemonRequest<ProjectRow>("/projects", {
+      const created = await daemonRequest<ProjectRow & { existing?: boolean }>("/projects", {
         method: "POST",
-        body: { name, repoPath, configSnapshot: projectConfig },
+        body: { repoPath, ...(options.branch ? { defaultBranch: options.branch } : {}) },
       });
-      console.log(`Project criado: ${created.id} (${created.name})`);
+      console.log(
+        `${created.existing ? "Project já registrado" : "Project criado"}: ${created.id} (${created.name}, base ${created.defaultBranch})`,
+      );
     });
 
   project

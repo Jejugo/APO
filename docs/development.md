@@ -56,7 +56,7 @@ Migrations são só para frente. Voltar o código na VM **não** desfaz o banco 
 
 - Mudança de comportamento ou achado de teste real → `TECHNICAL_PLAN.md` (seção do marco correspondente, "Achados").
 - Decisão de arquitetura → ADR novo em `docs/adr/NNNN-*.md`.
-- Comando novo na CLI → atualize a skill global `apo` (`~/.claude/skills/apo/SKILL.md`).
+- Comando novo na CLI → atualize a skill global `apo` (`~/.agents/skills/apo/`, com symlinks em `~/.claude/skills` e `~/.codex/skills`; o procedimento do `apo init` fica em `init.md`).
 - Mudança no deploy → `deploy/homelab/*` e `docs/homelab.md`.
 
 ## Deploy na VM
