@@ -85,3 +85,6 @@ export type { PullRequestCreator, PullRequestInput } from "./delivery.js";
 
 export { PLAN_CHANGE_REQUEST } from "./plan-changes.js";
 export type { ApprovalDecision } from "./feature-graph.js";
+
+export { DISTILLED_KINDS, distillMemories } from "./memory-writer.js";
+export type { FeatureRetrospective, MemoryPort } from "./memory-writer.js";

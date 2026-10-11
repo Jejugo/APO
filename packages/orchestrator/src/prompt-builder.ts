@@ -18,6 +18,8 @@ export interface WorkerPromptInput {
   task: { title: string; description: string; kind: "read" | "write" };
   dependencies: DependencyContext[];
   handover?: TaskHandoverPayload;
+  /** M5.9: bloco de memória do projeto, já recortado no orçamento. */
+  memory?: string;
   /** Caminho do WorkerReport — fora do repo (seção 6.3). */
   resultPath?: string;
 }
@@ -72,6 +74,9 @@ export function buildWorkerPrompt(input: WorkerPromptInput): string {
     );
   }
 
+  if (input.memory) {
+    sections.push(input.memory);
+  }
   if (input.handover) {
     sections.push(renderHandoverForPrompt(input.handover));
   }

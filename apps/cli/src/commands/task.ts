@@ -61,8 +61,32 @@ export function registerTaskCommands(program: Command): void {
         for (const decision of routing) {
           const target = decision.finalTarget?.targetId ?? "—";
           console.log(
-            `  ${decision.createdAt} ${decision.resolutionSource} → ${target}: ${decision.output?.reason ?? ""}`,
+            `  ${decision.createdAt} [${decision.router}] ${decision.resolutionSource} → ${target}: ${decision.output?.reason ?? ""}`,
           );
+          const semantic = decision.output?.semantic;
+          if (semantic) {
+            const ranking = semantic.ranking
+              .map((entry) => `${entry.targetId}=${entry.probability.toFixed(2)}`)
+              .join(", ");
+            console.log(
+              `      Jev: complexidade ${semantic.complexity}, risco ${semantic.risk}, review ${semantic.requiresReview.toFixed(2)}, confiança ${semantic.confidence.toFixed(2)} — ${ranking}`,
+            );
+            if (decision.output?.overriddenByPolicy) {
+              console.log(
+                `      política de capacidade trocou a sugestão (${decision.output.suggested}) por ${target}`,
+              );
+            }
+          }
+          if (decision.output?.semanticError) {
+            console.log(
+              `      Jev falhou (RuleBasedRouter assumiu): ${decision.output.semanticError}`,
+            );
+          }
+          for (const considered of decision.output?.considered ?? []) {
+            console.log(
+              `      candidato ${considered.targetId}: ${considered.availability}${considered.eliminated ? ` (eliminado: ${considered.eliminated})` : ""}`,
+            );
+          }
         }
       }
     });
@@ -106,7 +130,21 @@ interface AttemptRow {
 
 interface RoutingRow {
   createdAt: string;
+  router: string;
   resolutionSource: string;
   finalTarget: { targetId: string } | null;
-  output: { reason?: string } | null;
+  output: {
+    reason?: string;
+    considered?: Array<{ targetId: string; availability: string; eliminated?: string }>;
+    semantic?: {
+      complexity: string;
+      risk: string;
+      requiresReview: number;
+      confidence: number;
+      ranking: Array<{ targetId: string; probability: number }>;
+    };
+    semanticError?: string;
+    overriddenByPolicy?: boolean;
+    suggested?: string;
+  } | null;
 }

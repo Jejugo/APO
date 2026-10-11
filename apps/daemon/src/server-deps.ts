@@ -9,6 +9,7 @@ import type {
   TaskAttemptRepository,
   TaskRepository,
 } from "@apo/db";
+import type { MemoryService, RetrieveOptions } from "@apo/memory";
 import type { Logger } from "@apo/observability";
 import type { TargetRegistry } from "@apo/orchestrator";
 import type { CapacityMonitor, RoutingPolicy } from "@apo/routing";
@@ -26,6 +27,9 @@ export interface ServerDeps {
   handovers: HandoverRepository;
   qualityResults: QualityResultRepository;
   featureRunner: FeatureRunner;
+  /** M5: ausente quando `memory.enabled: false`. */
+  memory?: MemoryService;
+  memoryRetrieve?: RetrieveOptions;
   targets: TargetRegistry;
   capacity: CapacityMonitor;
   routingPolicy: RoutingPolicy;

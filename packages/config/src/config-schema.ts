@@ -61,11 +61,32 @@ export const ProvidersConfigSchema = z.object({
   unknownResetRetryMinutes: z.number().int().positive().default(30),
 });
 
+// M5.1 — Jev (TaskRouter semântico). A key nunca fica aqui: só o nome da
+// variável de ambiente (carregada de ~/.apo/secrets.env pelo daemon).
+export const JevConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  endpoint: z.string().url().default("https://openrouter.ai/api/alpha/decisions"),
+  model: z.string().default("~typesafe/jev-latest"),
+  apiKeyEnv: z.string().default("OPENROUTER_API_KEY"),
+  timeoutMs: z.number().int().positive().default(15_000),
+});
+
+// M5.6–M5.10 — memória do Project (pgvector + embeddings locais).
+export const MemoryConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Memórias por prompt (planner e cada Task). */
+  topK: z.number().int().positive().default(6),
+  /** Teto de caracteres do bloco de memória no prompt (≈ tokens × 4). */
+  maxChars: z.number().int().positive().default(6000),
+});
+
 export const GlobalConfigSchema = z.object({
   socketPath: z.string().default("~/.apo/apo.sock"),
   routing: RoutingConfigSchema.default({}),
   limits: LimitsConfigSchema.default({}),
   providers: ProvidersConfigSchema.default({}),
+  jev: JevConfigSchema.default({}),
+  memory: MemoryConfigSchema.default({}),
 });
 
 export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;

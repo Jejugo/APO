@@ -28,18 +28,31 @@ import {
   createDb,
 } from "@apo/db";
 import { buildWorkerEnvironment } from "@apo/harnesses";
+import {
+  MemoryService,
+  MemoryStore,
+  TransformersEmbeddingProvider,
+  renderMemories,
+} from "@apo/memory";
 import { createLogger } from "@apo/observability";
-import { WorkerSlots } from "@apo/orchestrator";
-import { DEFAULT_ROUTING_POLICY, type RoutingPolicy } from "@apo/routing";
+import { type MemoryPort, WorkerSlots } from "@apo/orchestrator";
+import {
+  DEFAULT_ROUTING_POLICY,
+  JevTaskRouter,
+  type RoutingPolicy,
+  type TaskRouter,
+} from "@apo/routing";
 import { createCapacityMonitor } from "./capacity.js";
 import { FeatureRunner } from "./feature-runner.js";
 import { resumeFeatures, startCapacityResumer } from "./resume.js";
+import { loadSecretsFile } from "./secrets.js";
 import { buildServer } from "./server.js";
 import { buildTargetRegistry } from "./targets.js";
 
 const DEFAULT_DATABASE_URL = "postgres://apo:apo@localhost:5433/apo";
 
 async function main(): Promise<void> {
+  const secrets = loadSecretsFile(join(apoHome(), "secrets.env"));
   const globalConfig = loadConfig(globalConfigPath(), GlobalConfigSchema);
   // `?? default`: mesma particularidade de inferência do zod com
   // exactOptionalPropertyTypes já registrada no M0 (packages/config/src/load.test.ts).
@@ -72,6 +85,28 @@ async function main(): Promise<void> {
   rmSync(socketPath, { force: true });
 
   const logger = createLogger({});
+  if (secrets.warning) logger.warn(secrets.warning);
+
+  // M5 — Jev como TaskRouter. Sem key ou desligado, o RuleBasedRouter decide
+  // sozinho: o Jev nunca é requisito estrutural (M5.4).
+  const jevConfig = GlobalConfigSchema.shape.jev.parse(globalConfig.jev ?? {});
+  let taskRouter: TaskRouter | undefined;
+  const jevKey = process.env[jevConfig.apiKeyEnv ?? "OPENROUTER_API_KEY"];
+  if (jevConfig.enabled === false) {
+    logger.info("Jev desligado no config.yaml; roteamento só por regras");
+  } else if (!jevKey) {
+    logger.warn(
+      { apiKeyEnv: jevConfig.apiKeyEnv },
+      "Jev sem API key (nem no ambiente nem em ~/.apo/secrets.env); roteamento só por regras",
+    );
+  } else {
+    taskRouter = new JevTaskRouter({
+      endpoint: jevConfig.endpoint ?? "https://openrouter.ai/api/alpha/decisions",
+      model: jevConfig.model ?? "~typesafe/jev-latest",
+      apiKey: jevKey,
+      timeoutMs: jevConfig.timeoutMs ?? 15_000,
+    });
+  }
   const db = createDb(databaseUrl);
   const projects = new ProjectRepository(db);
   const projectAgents = new ProjectAgentRepository(db);
@@ -84,6 +119,29 @@ async function main(): Promise<void> {
   const providerCapacity = new ProviderCapacityRepository(db);
   const qualityResults = new QualityResultRepository(db);
   const agentMessages = new AgentMessageRepository(db);
+
+  // M5.6–M5.10 — memória do Project. Embeddings locais (ADR 0004); o modelo
+  // carrega em segundo plano para a primeira Feature não pagar os ~7s.
+  const memoryConfig = GlobalConfigSchema.shape.memory.parse(globalConfig.memory ?? {});
+  let memory: MemoryService | undefined;
+  let memoryPort: MemoryPort | undefined;
+  if (memoryConfig.enabled !== false) {
+    const embeddings = new TransformersEmbeddingProvider({ cacheDir: join(apoHome(), "models") });
+    memory = new MemoryService(new MemoryStore(db, embeddings));
+    const service = memory;
+    const retrieveOptions = {
+      limit: memoryConfig.topK ?? 6,
+      maxChars: memoryConfig.maxChars ?? 6000,
+    };
+    memoryPort = {
+      retrieveForPrompt: async (projectId, query) =>
+        renderMemories(await service.retrieve(projectId, query, retrieveOptions)),
+      remember: (projectId, source, items) => service.remember(projectId, source, items),
+    };
+    void embeddings.embed(["aquecimento"], "query").catch((error: unknown) => {
+      logger.warn({ error }, "memória: falha ao carregar o modelo de embeddings");
+    });
+  }
 
   const targets = buildTargetRegistry(providersConfig.targets, logger);
   if (targets.length === 0) {
@@ -112,6 +170,8 @@ async function main(): Promise<void> {
       maxAttemptsPerTask: providersConfig.maxAttemptsPerTask,
       qualityResults,
       agentMessages,
+      ...(taskRouter ? { taskRouter } : {}),
+      ...(memoryPort ? { memory: memoryPort } : {}),
       routingPolicy,
       // M3.0b: allowlist base + o que o Project autorizar em .apo/project.yaml.
       workerEnv: (repoPath) => {
@@ -170,6 +230,15 @@ async function main(): Promise<void> {
     handovers,
     qualityResults,
     featureRunner,
+    ...(memory
+      ? {
+          memory,
+          memoryRetrieve: {
+            limit: memoryConfig.topK ?? 6,
+            maxChars: memoryConfig.maxChars ?? 6000,
+          },
+        }
+      : {}),
     targets,
     capacity,
     routingPolicy,
@@ -179,7 +248,12 @@ async function main(): Promise<void> {
   await app.listen({ path: socketPath });
   writePidFile(pidFilePath, process.pid);
   logger.info(
-    { socketPath, pid: process.pid, targets: targets.map((entry) => entry.candidate.targetId) },
+    {
+      socketPath,
+      pid: process.pid,
+      targets: targets.map((entry) => entry.candidate.targetId),
+      taskRouter: taskRouter?.id ?? "rule",
+    },
     "apo daemon iniciado",
   );
 

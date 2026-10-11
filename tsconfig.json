@@ -1,14 +1,35 @@
 {
   "files": [],
   "references": [
-    { "path": "apps/daemon" },
-    { "path": "apps/cli" },
-    { "path": "packages/domain" },
-    { "path": "packages/config" },
-    { "path": "packages/db" },
-    { "path": "packages/observability" },
-    { "path": "packages/harnesses" },
-    { "path": "packages/orchestrator" },
-    { "path": "packages/routing" }
+    {
+      "path": "apps/daemon"
+    },
+    {
+      "path": "apps/cli"
+    },
+    {
+      "path": "packages/domain"
+    },
+    {
+      "path": "packages/config"
+    },
+    {
+      "path": "packages/db"
+    },
+    {
+      "path": "packages/observability"
+    },
+    {
+      "path": "packages/harnesses"
+    },
+    {
+      "path": "packages/orchestrator"
+    },
+    {
+      "path": "packages/routing"
+    },
+    {
+      "path": "packages/memory"
+    }
   ]
 }

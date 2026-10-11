@@ -101,6 +101,8 @@ export interface PlanFeatureInput {
   roleIds: string[];
   cwd: string;
   timeoutMs: number;
+  /** M5.9: memória do projeto relevante para o objetivo. */
+  memory?: string;
 }
 
 export interface PlanFeatureResult {
@@ -120,6 +122,7 @@ export async function planFeature(
     `Roles válidos (use exatamente um destes ids em "role"): ${input.roleIds.join(", ")}.`,
     'Cada Task tem: key curta e única (t1, t2…), title, description autossuficiente, kind ("write" se altera arquivos, "read" se só analisa), role, expectedPaths (caminhos relativos ao repo que você espera que a Task altere; pode ser vazio para read) e dependsOn (keys das Tasks das quais ela precisa do resultado).',
     "Leia o repositório o suficiente para estimar expectedPaths de forma realista.",
+    ...(input.memory ? [input.memory] : []),
     `Objetivo: ${input.objective}`,
   ].join("\n\n");
 

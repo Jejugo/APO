@@ -18,3 +18,14 @@ export {
   type RoutingCandidate,
   type RoutingPolicy,
 } from "./types.js";
+export {
+  applyCapacityPolicy,
+  DEFAULT_EQUIVALENCE_MARGIN,
+  type Level,
+  type PolicyInput,
+  type PolicyResult,
+  type SemanticDecision,
+  type SemanticRoutingInput,
+  type TaskRouter,
+} from "./semantic.js";
+export { buildJevPayload, type JevConfig, JevTaskRouter } from "./jev.js";

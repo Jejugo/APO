@@ -5,6 +5,7 @@ import { registerDaemonCommands } from "./commands/daemon.js";
 import { registerFeatureCommands } from "./commands/feature.js";
 import { registerInitCommand } from "./commands/init.js";
 import { registerLogsCommand } from "./commands/logs.js";
+import { registerMemoryCommands } from "./commands/memory.js";
 import { registerProjectCommands } from "./commands/project.js";
 import { registerProvidersCommand } from "./commands/providers.js";
 import { registerRoleCommands } from "./commands/role.js";
@@ -19,6 +20,7 @@ program.name("apo").description("Orquestrador local de agentes de código").vers
 registerInitCommand(program);
 registerDaemonCommands(program);
 registerProjectCommands(program);
+registerMemoryCommands(program);
 registerRunCommand(program);
 registerFeatureCommands(program);
 registerTaskCommands(program);

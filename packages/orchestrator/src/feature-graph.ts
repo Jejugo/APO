@@ -47,6 +47,7 @@ import {
 import { GhPullRequestCreator, buildDeliverySummary } from "./delivery.js";
 import { candidatesOf, findTarget } from "./harness-registry.js";
 import { pickJudge } from "./judge.js";
+import { distillMemories } from "./memory-writer.js";
 import { PLAN_CHANGE_REQUEST, PlanChangeRequestSchema, decidePlanChange } from "./plan-changes.js";
 import { type FeaturePlan, FeaturePlanSchema, singleTaskPlan, validatePlan } from "./plan.js";
 import { type GateResult, QUALITY_GATES, type QualityGate, runQualityGates } from "./quality.js";
@@ -760,6 +761,69 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
       });
       return { outcome: "success" as const };
     })
+    .addNode("remember", async (state, runtime) => {
+      // M5.10 — falhar aqui nunca muda o resultado da Feature.
+      if (state.outcome !== "success" || !deps.memory) return {};
+      try {
+        const judge = pickJudge(deps);
+        if (!judge) return {};
+        const feature = await deps.features.getById(state.featureId);
+        const rows = await deps.qualityResults.listByFeature(state.featureId);
+        const findings = rows
+          .filter((row) => row.gate === "review")
+          .flatMap((row) => lastDetails<ReviewFinding[]>([row], "review", "findings") ?? [])
+          .map((finding) => `[${finding.severity}] ${finding.description}`);
+        const corrections = (await deps.events.listByFeature(state.featureId))
+          .filter((event) => event.type === "feature.rejected")
+          .map((event) => String((event.payload as { reason?: string } | null)?.reason ?? ""));
+        const failures: string[] = [];
+        for (const task of await deps.tasks.listByFeature(state.featureId)) {
+          for (const attempt of await deps.taskAttempts.listByTask(task.id)) {
+            if (attempt.failureKind && attempt.failureMessage) {
+              failures.push(
+                `${task.title}: ${attempt.failureKind} — ${attempt.failureMessage.slice(0, 200)}`,
+              );
+            }
+          }
+        }
+        const items = await distillMemories(
+          judge.runner,
+          {
+            objective: await objectiveWithAdditions(state),
+            deliverySummary: feature?.deliverySummary ?? "",
+            findings,
+            corrections,
+            failures,
+          },
+          {
+            cwd: integrationWorktreePath(state.worktreesRoot, state.featureId),
+            timeoutMs: judgeTimeout,
+          },
+          abortSignalOf(runtime),
+        );
+        if (items && items.length > 0) {
+          const saved = await deps.memory.remember(
+            state.projectId,
+            `feature:${state.featureId}`,
+            items,
+          );
+          await emitEvent(deps.events, deps.logger, {
+            type: "memory.written",
+            projectId: state.projectId,
+            featureId: state.featureId,
+            payload: { count: saved, kinds: items.map((item) => item.kind) },
+          });
+        }
+      } catch (error) {
+        await emitEvent(deps.events, deps.logger, {
+          type: "memory.write_failed",
+          projectId: state.projectId,
+          featureId: state.featureId,
+          payload: { error: error instanceof Error ? error.message : String(error) },
+        });
+      }
+      return {};
+    })
     .addNode("complete", async (state) => {
       // Única escrita do status terminal da Feature.
       const finalStatus =
@@ -836,7 +900,8 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
           ? "execute_wave"
           : "complete",
     )
-    .addEdge("create_pr", "complete")
+    .addEdge("create_pr", "remember")
+    .addEdge("remember", "complete")
     .addEdge("complete", END);
 
   return graph.compile({ checkpointer });

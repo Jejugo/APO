@@ -1,12 +1,15 @@
 import {
   bigserial,
   boolean,
+  index,
   integer,
   jsonb,
   pgEnum,
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
+  vector,
 } from "drizzle-orm/pg-core";
 
 // Schema do M0 + M1 (seção 5.1 do TECHNICAL_PLAN.md) — só as colunas já
@@ -277,3 +280,36 @@ export const agentMessages = pgTable("agent_messages", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
 });
+
+// M5.6 — memória do Project (seção 22 do PLAN.md). `kind`: doc (ingerida do
+// repo), convention, decision, pattern, failure, correction. `source` é o
+// caminho do arquivo (doc) ou `feature:<id>`/`manual`. A dimensão segue o
+// EmbeddingProvider (multilingual-e5-small: 384) — ver ADR 0004.
+export const MEMORY_EMBEDDING_DIMENSIONS = 384;
+
+export const memories = pgTable(
+  "memories",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    kind: text("kind").notNull(),
+    source: text("source").notNull(),
+    title: text("title").notNull(),
+    content: text("content").notNull(),
+    contentHash: text("content_hash").notNull(),
+    embedding: vector("embedding", { dimensions: MEMORY_EMBEDDING_DIMENSIONS }).notNull(),
+    embeddingModel: text("embedding_model").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("memories_project_source_hash_idx").on(
+      table.projectId,
+      table.source,
+      table.contentHash,
+    ),
+    index("memories_embedding_idx").using("hnsw", table.embedding.op("vector_cosine_ops")),
+  ],
+);

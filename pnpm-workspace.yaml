@@ -4,3 +4,8 @@ packages:
 allowBuilds:
   '@biomejs/biome': true
   esbuild: true
+  # M5 (memória, transformers.js): runtime ONNX para os embeddings.
+  onnxruntime-node: true
+  protobufjs: true
+  # Dependência opcional de imagem do transformers.js — o APO só usa texto.
+  sharp: false

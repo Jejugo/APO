@@ -6,12 +6,29 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../../packages/config" },
-    { "path": "../../packages/db" },
-    { "path": "../../packages/domain" },
-    { "path": "../../packages/harnesses" },
-    { "path": "../../packages/observability" },
-    { "path": "../../packages/orchestrator" },
-    { "path": "../../packages/routing" }
+    {
+      "path": "../../packages/config"
+    },
+    {
+      "path": "../../packages/db"
+    },
+    {
+      "path": "../../packages/domain"
+    },
+    {
+      "path": "../../packages/harnesses"
+    },
+    {
+      "path": "../../packages/observability"
+    },
+    {
+      "path": "../../packages/orchestrator"
+    },
+    {
+      "path": "../../packages/routing"
+    },
+    {
+      "path": "../../packages/memory"
+    }
   ]
 }

@@ -8,6 +8,7 @@
 
 import type { ExecutionPreference, ResolutionSource } from "@apo/domain";
 import { type RouteResult, routeTask } from "./rule-based-router.js";
+import { type PolicyResult, type SemanticDecision, applyCapacityPolicy } from "./semantic.js";
 import type { ProviderCapacitySnapshot, RoutingCandidate, RoutingPolicy } from "./types.js";
 
 export interface ResolveInput {
@@ -20,6 +21,8 @@ export interface ResolveInput {
   /** Targets a evitar (só vale para preferred/auto; forced nunca troca). */
   exclude?: string[];
   policy?: RoutingPolicy;
+  /** M5: decisão do TaskRouter (Jev). Só vale no modo auto; a capacity policy valida por cima. */
+  semantic?: SemanticDecision;
 }
 
 export type ResolveResult =
@@ -29,6 +32,8 @@ export type ResolveResult =
       resolutionSource: ResolutionSource;
       reason: string;
       route?: RouteResult;
+      /** M5.3: a capacity policy trocou a sugestão do router semântico. */
+      policy?: PolicyResult;
     }
   | { kind: "needs_human"; reason: string }
   | { kind: "no_capacity"; reason: string; route: RouteResult };
@@ -113,6 +118,25 @@ export function resolveExecutionTarget(input: ResolveInput): ResolveResult {
       reason: `preferido indisponível (${match ? match.targetId : "sem match"}); ${route.reason}`,
       route,
     };
+  }
+
+  if (input.semantic) {
+    const decided = applyCapacityPolicy({
+      decision: input.semantic,
+      candidates: input.candidates,
+      capacity: input.capacity,
+      ...(input.exclude ? { exclude: input.exclude } : {}),
+      ...(input.policy ? { policy: input.policy } : {}),
+    });
+    if (decided.target) {
+      return {
+        kind: "target",
+        target: decided.target,
+        resolutionSource: "jev",
+        reason: decided.reason,
+        policy: decided,
+      };
+    }
   }
 
   const route = routeTask({

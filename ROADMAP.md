@@ -44,7 +44,7 @@ E adiando:
 
 ## 3. Marcos
 
-> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → **M5** → M6.
+> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → **M6**.
 >
 > O failover entre providers (M3) passa na frente do DAG multi-task (M2). É o diferencial que nenhum runtime externo de agent teams oferece, e funciona já em cima do graph do M1, que na prática é o `SingleAgentEngine` (ver seção 4.7). O M2 fica congelado até um triage rápido decidir se o `ApoNativeEngine` precisa mesmo da infraestrutura de times própria ou se parte dela pode vir de um runtime externo.
 >

@@ -622,7 +622,7 @@ Com ele, failover, recovery, paralelismo, conflitos de merge e loops de review s
 
 Convenção: cada fase lista **entregas** (numeradas, cada uma do tamanho de um commit ou PR), **testes obrigatórios** e o **gate de saída**. As estimativas estão em semanas de um dev com agentes e somam o intervalo do ROADMAP.md.
 
-**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → **M5** → M6. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
+**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → **M6**. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
 
 | Entrega | De | Para | Motivo |
 |---|---|---|---|
@@ -929,7 +929,9 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 ### M5 — Jev e memória
 
-> ⚠️ **Antes de começar:** pedir ao usuário o endpoint do Jev e configurar a API key.
+> ⚠️ **Antes de começar:** pedir ao usuário o endpoint do Jev e configurar a API key. (Feito: endpoint OpenRouter Decisions, key em `~/.apo/secrets.env`.)
+>
+> **M5 ✅ (2026-10-11).** `JevTaskRouter` + capacity policy por cima (com degradação para o RuleBasedRouter) e memória do Project (pgvector, embeddings locais, ingestão incremental, retrieval no planner e em cada Task, `MemoryWriter` ao concluir a Feature). Gate abaixo com evidências.
 
 **Objetivo:** roteamento semântico e contexto de projeto, sem que nenhum dos dois vire requisito estrutural.
 **Estimativa:** 1,5 a 2,5 semanas.
@@ -963,9 +965,17 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 #### Gate de saída
 
-- [ ] Com A em 80% e B em 40% equivalentes, o sistema tende a B também com o Jev (seção 18 do PLAN.md).
-- [ ] O Jev desligado não quebra nenhum teste do M4.
-- [ ] Uma convenção registrada em memória é seguida numa Feature real sem ser repetida no objetivo.
+- [x] Com A em 80% e B em 40% equivalentes, o sistema tende a B também com o Jev (seção 18 do PLAN.md) — Jev real (`jev.live.test.ts`): escolheu B com probabilidade 1.0 por conta própria; a capacity policy também troca para B quando o Jev os vê como equivalentes (margem de 0.15) e ele não troca.
+- [x] O Jev desligado não quebra nenhum teste do M4 — os testes do M4 rodam sem `taskRouter`; "Jev fora do ar" (exceção no router) conclui a Feature pelo RuleBasedRouter, com `routing.semantic_failed` e `semanticError` no RoutingAudit.
+- [x] Uma convenção registrada em memória é seguida numa Feature real sem ser repetida no objetivo — `apo memory add` ("toda função exportada tem JSDoc em português com @example"); Feature real pedindo `slugify` sem mencionar documentação → `src/slug.ts` saiu com JSDoc em português e `@example`. Controle: `src/price.ts`, feito pelo mesmo harness no M4 sem a memória, não tem JSDoc nenhum.
+
+**Achados:**
+- **API do Jev** (OpenRouter Decisions, confirmada contra a API real): três tipos de pergunta — `noul` (probabilidade), `choice` (opção + probabilidade de cada opção + confiança) e `score` (nível + probabilidades). O APO pergunta complexidade e risco (`score`), o target (`choice`) e se precisa de review (`noul`). O `choice` com probabilidades por target é o que a capacity policy usa para decidir quando dois targets são "equivalentes". ~US$ 0,00002 por decisão.
+- **`score` vem fracionado** (valor esperado entre níveis, ex.: 1.6). A primeira versão exigia inteiro e rejeitava a resposta — a degradação do M5.4 fez o papel dela (cairia no RuleBasedRouter). Agora arredonda para o nível mais próximo.
+- **Viés de posição do Jev:** com dois targets idênticos e sem dado de uso, ele dá ~0.9 ao primeiro da lista. Como o uso real quase nunca é conhecido (sem fonte oficial, seção 15), o primeiro target do `config.yaml` tende a receber a maior parte das Tasks. Não corrigido; candidato a mitigação (embaralhar a ordem dos candidatos, ou mandar `active_workers` com mais peso).
+- **Segredos:** a key fica em `~/.apo/secrets.env` (chmod 600), carregada só no processo do daemon; o `config.yaml` guarda só o nome da variável (`jev.apiKeyEnv`). Os workers não a recebem (allowlist de ambiente do M3).
+- **Embeddings:** ADR 0004 (transformers.js, `multilingual-e5-small`, 384 dimensões).
+- **MemoryWriter real:** ao aprovar a Feature do `slugify` (PR #2 no repo de teste), o Lead destilou 3 memórias — duas convenções e a falha de lint daquela Feature ("Biome rejeita faixa de combining marks literal em regex"), que é exatamente o tipo de tentativa falha que não deve se repetir.
 
 ---
 

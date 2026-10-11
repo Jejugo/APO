@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { loadRoleRegistry } from "@apo/config";
 import type { ExecutionPreference } from "@apo/domain";
+import { renderMemories } from "@apo/memory";
 import { emitEvent } from "@apo/observability";
 import {
   AgentRunnerImpl,
@@ -203,6 +204,26 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
     if (body.plan && validatePlan(body.plan).ok) {
       plan = body.plan;
     } else {
+      // M5.8/M5.9: ingestão incremental (só o que mudou desde a última) e
+      // memória relevante ao objetivo para o planner. Falha aqui não impede
+      // planejar.
+      let memoryBlock: string | undefined;
+      if (deps.memory) {
+        try {
+          const ingest = await deps.memory.ingestProject(project.id, project.repoPath);
+          if (ingest.inserted > 0 || ingest.removed > 0) {
+            deps.logger.info(
+              { projectId: project.id, ...ingest },
+              "memória: documentos reindexados",
+            );
+          }
+          memoryBlock = renderMemories(
+            await deps.memory.retrieve(project.id, body.objective, deps.memoryRetrieve ?? {}),
+          );
+        } catch (error) {
+          deps.logger.warn({ error, projectId: project.id }, "memória indisponível para o planner");
+        }
+      }
       const planned = await planFeature(
         agentRunner,
         {
@@ -211,6 +232,7 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
           roleIds: [...loadRoleRegistry(project.repoPath).keys()],
           cwd: project.repoPath,
           timeoutMs: DEFAULT_TASK_TIMEOUT_MS,
+          ...(memoryBlock ? { memory: memoryBlock } : {}),
         },
         controller.signal,
       );

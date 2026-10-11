@@ -57,6 +57,21 @@ const approvingJudge: Responder = (input) => {
   if (input.prompt.includes("Você é o Reviewer")) {
     return { succeed: { structuredOutput: { findings: [] } } };
   }
+  if (input.prompt.includes("acabou de ser concluída")) {
+    return {
+      succeed: {
+        structuredOutput: {
+          memories: [
+            {
+              kind: "decision",
+              title: "decisão de teste",
+              content: "registrada pelo MemoryWriter",
+            },
+          ],
+        },
+      },
+    };
+  }
   if (input.prompt.includes("pediu uma mudança no plano")) {
     return { succeed: { structuredOutput: { decision: "reject", reason: "fora do escopo" } } };
   }
@@ -1023,5 +1038,139 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     expect(rows.filter((row) => row.gate === "build").map((row) => row.iteration)).toEqual([0, 1]);
     expect(rows.every((row) => row.status !== "failed")).toBe(true);
     expect(prs.created).toHaveLength(1);
+  });
+
+  // --- M5 ------------------------------------------------------------------
+
+  it("M5.4: Jev fora do ar → a Feature conclui pelo RuleBasedRouter e a falha fica registrada", async () => {
+    const { feature, deps, input } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", [
+          { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+        ]),
+      ],
+    });
+    deps.taskRouter = {
+      id: "jev",
+      route: async () => {
+        throw new Error("connect ECONNREFUSED");
+      },
+    };
+    await run(deps, input);
+
+    const { feature: done, tasks } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    const decisions = await repos.routingDecisions.listByTask(tasks[0]?.id ?? "");
+    expect(decisions[0]?.resolutionSource).toBe("rule_router");
+    expect((decisions[0]?.output as { semanticError?: string }).semanticError).toContain(
+      "ECONNREFUSED",
+    );
+    const events = (await repos.events.listByFeature(feature.id)).map((event) => event.type);
+    expect(events).toContain("routing.semantic_failed");
+  });
+
+  it("M5.2/M5.5: o Jev escolhe o segundo target; a decisão e o motivo ficam no RoutingAudit", async () => {
+    const { feature, deps, input } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", [{ succeed: {} }]),
+        fakeTarget("fake-b", "openai", [
+          { writeFile: { path: "b.txt", content: "b" }, commit: "feat: b" },
+        ]),
+      ],
+    });
+    let calls = 0;
+    deps.taskRouter = {
+      id: "jev",
+      route: async (routingInput) => {
+        calls += 1;
+        expect(routingInput.candidates.map((entry) => entry.candidate.targetId)).toEqual([
+          "fake-a",
+          "fake-b",
+        ]);
+        return {
+          router: "jev:mock",
+          complexity: "medium",
+          risk: "low",
+          requiresReview: 0.4,
+          ranking: [
+            { targetId: "fake-b", probability: 0.8 },
+            { targetId: "fake-a", probability: 0.2 },
+          ],
+          confidence: 0.8,
+        };
+      },
+    };
+    await run(deps, input);
+
+    const { feature: done, tasks, attempts } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    expect(attempts.map((attempt) => attempt.targetId)).toEqual(["fake-b"]);
+    expect(calls).toBe(1);
+    const [decision] = await repos.routingDecisions.listByTask(tasks[0]?.id ?? "");
+    expect(decision).toMatchObject({ router: "jev:mock", resolutionSource: "jev" });
+    expect(decision?.output).toMatchObject({
+      overriddenByPolicy: false,
+      semantic: { complexity: "medium" },
+    });
+  });
+
+  it("M5.9/M5.10: memória relevante entra no prompt do worker; ao concluir, o Lead destila e grava memórias", async () => {
+    const harness = fakeTarget("fake-a", "anthropic", [
+      { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+    ]);
+    const { feature, deps, input } = await setup({ targets: [harness] });
+    const queries: string[] = [];
+    const remembered: Array<{ source: string; items: unknown[] }> = [];
+    deps.memory = {
+      retrieveForPrompt: async (_projectId, query) => {
+        queries.push(query);
+        return "## Contexto do projeto (memória)\n\n### Convenções [convention]\nValores monetários sempre em centavos.";
+      },
+      remember: async (_projectId, source, items) => {
+        remembered.push({ source, items });
+        return items.length;
+      },
+    };
+    await run(deps, input);
+
+    expect((await finalState(feature.id)).feature?.status).toBe("completed");
+    const workerPrompt = (harness.harness as FakeHarness).receivedPrompts[0] ?? "";
+    expect(workerPrompt).toContain("Valores monetários sempre em centavos.");
+    expect(workerPrompt.indexOf("Valores monetários")).toBeGreaterThan(
+      workerPrompt.indexOf("## Sua Task"),
+    );
+    expect(queries[0]).toContain(input.objective);
+    expect(remembered).toEqual([
+      {
+        source: `feature:${feature.id}`,
+        items: [
+          { kind: "decision", title: "decisão de teste", content: "registrada pelo MemoryWriter" },
+        ],
+      },
+    ]);
+  });
+
+  it("M5: memória falhando não derruba a Feature", async () => {
+    const { feature, deps, input } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", [
+          { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+        ]),
+      ],
+    });
+    deps.memory = {
+      retrieveForPrompt: async () => {
+        throw new Error("pgvector fora");
+      },
+      remember: async () => {
+        throw new Error("pgvector fora");
+      },
+    };
+    await run(deps, input);
+    expect((await finalState(feature.id)).feature?.status).toBe("completed");
+    const events = (await repos.events.listByFeature(feature.id)).map((event) => event.type);
+    expect(events).toEqual(
+      expect.arrayContaining(["memory.retrieve_failed", "memory.write_failed"]),
+    );
   });
 });

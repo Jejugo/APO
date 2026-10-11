@@ -15,6 +15,7 @@
     "@apo/db": "workspace:*",
     "@apo/domain": "workspace:*",
     "@apo/harnesses": "workspace:*",
+    "@apo/memory": "workspace:*",
     "@apo/observability": "workspace:*",
     "@apo/orchestrator": "workspace:*",
     "@apo/routing": "workspace:*",

@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { GENERIC_ROLE_ID, type RoleDefinition, loadRoleRegistry } from "@apo/config";
 import type {
   AgentMessageRepository,
@@ -31,6 +31,8 @@ import {
   type CapacityMonitor,
   type ResolveResult,
   type RoutingPolicy,
+  type SemanticDecision,
+  type TaskRouter,
   resolveExecutionTarget,
 } from "@apo/routing";
 import { z } from "zod";
@@ -38,6 +40,7 @@ import { type AttemptControl, abortReasonOf } from "./attempt-control.js";
 import type { PullRequestCreator } from "./delivery.js";
 import { type TaskHandoverPayload, buildHandover } from "./handover.js";
 import { type TargetRegistry, candidatesOf, findTarget } from "./harness-registry.js";
+import type { MemoryPort } from "./memory-writer.js";
 import { PLAN_CHANGE_REQUEST, PlanChangeRequestSchema } from "./plan-changes.js";
 import { buildWorkerPrompt } from "./prompt-builder.js";
 import { loadProjectConfig, prepareWorktree } from "./verify.js";
@@ -90,6 +93,10 @@ export interface EngineDeps {
   pullRequests?: PullRequestCreator;
   /** Timeout das chamadas de julgamento (Lead/Reviewer) dentro do graph. */
   judgeTimeoutMs?: number;
+  /** M5: roteamento semântico (Jev). Ausente ou falhando → RuleBasedRouter (M5.4). */
+  taskRouter?: TaskRouter;
+  /** M5.9/M5.10: memória do projeto. Ausente ou falhando → prompt sem memória. */
+  memory?: MemoryPort;
 }
 
 export interface FeatureContext {
@@ -229,6 +236,25 @@ export async function runTask(
     }),
   );
 
+  // M5.9: memória do projeto relevante para esta Task (descrição + arquivos).
+  let memory: string | undefined;
+  if (deps.memory) {
+    try {
+      memory = await deps.memory.retrieveForPrompt(
+        feature.projectId,
+        [task.title, task.description, ...(task.expectedPaths ?? [])].join("\n"),
+      );
+    } catch (error) {
+      await emitEvent(deps.events, deps.logger, {
+        type: "memory.retrieve_failed",
+        projectId: feature.projectId,
+        featureId: feature.featureId,
+        taskId,
+        payload: { error: error instanceof Error ? error.message : String(error) },
+      });
+    }
+  }
+
   const featureRow = await deps.features.getById(feature.featureId);
   const featurePreference = (featureRow?.executionPreference ?? null) as ExecutionPreference | null;
   const rolePreference = (role.executionPreference ?? null) as ExecutionPreference | null;
@@ -238,6 +264,56 @@ export async function runTask(
   let pendingHandoverId: string | undefined = previousHandovers.at(-1)?.id;
   let exclude: string[] = [];
   let lastFailureWasCapacity = false;
+
+  // M5: o Jev classifica a Task uma vez por execução; a capacity policy
+  // reaplica a capacidade atual a cada attempt (resolveExecutionTarget).
+  let semantic: SemanticDecision | undefined;
+  let semanticError: string | undefined;
+  let semanticTried = false;
+  const semanticFor = async (taskPreference: ExecutionPreference | null) => {
+    const overridden = [taskPreference, featurePreference, rolePreference].some(
+      (preference) => preference && preference.mode !== "auto",
+    );
+    if (overridden || !deps.taskRouter || semanticTried) return semantic;
+    semanticTried = true;
+    try {
+      semantic = await deps.taskRouter.route(
+        {
+          task: {
+            title: task.title,
+            description: task.description,
+            kind: task.kind,
+            role: role.id,
+            expectedPaths: task.expectedPaths ?? [],
+            origin: task.origin,
+          },
+          project: { name: basename(feature.repoPath) },
+          candidates: deps.targets.map((entry) => {
+            const capabilities = entry.harness.getCapabilities();
+            return {
+              candidate: entry.candidate,
+              capabilities: {
+                readOnly: capabilities.supportsReadOnly,
+                structuredOutput: capabilities.supportsOutputSchema,
+              },
+              capacity: capacityOf(entry.candidate.provider),
+            };
+          }),
+        },
+        control?.featureSignal() ?? new AbortController().signal,
+      );
+    } catch (error) {
+      semanticError = error instanceof Error ? error.message : String(error);
+      await emitEvent(deps.events, deps.logger, {
+        type: "routing.semantic_failed",
+        projectId: feature.projectId,
+        featureId: feature.featureId,
+        taskId,
+        payload: { router: deps.taskRouter.id, error: semanticError.slice(0, 500) },
+      });
+    }
+    return semantic;
+  };
 
   for (let attemptsInRun = 0; ; attemptsInRun += 1) {
     if (attemptsInRun >= deps.maxAttemptsPerTask) {
@@ -251,6 +327,7 @@ export async function runTask(
 
     const current = await deps.tasks.getById(taskId);
     const taskPreference = (current?.executionPreference ?? null) as ExecutionPreference | null;
+    const semanticDecision = await semanticFor(taskPreference);
     const resolve = (excluded: string[]) =>
       resolveExecutionTarget({
         candidates: candidatesOf(deps.targets),
@@ -259,6 +336,7 @@ export async function runTask(
         featurePreference,
         rolePreference,
         exclude: excluded,
+        ...(semanticDecision ? { semantic: semanticDecision } : {}),
         ...(deps.routingPolicy ? { policy: deps.routingPolicy } : {}),
       });
     let resolved: ResolveResult = resolve(exclude);
@@ -271,9 +349,11 @@ export async function runTask(
       id: randomUUID(),
       taskId,
       router:
-        resolved.kind === "target" && resolved.resolutionSource !== "rule_router"
-          ? "override"
-          : "rule",
+        resolved.kind === "target" && resolved.resolutionSource === "jev"
+          ? (semanticDecision?.router ?? "jev")
+          : resolved.kind === "target" && resolved.resolutionSource !== "rule_router"
+            ? "override"
+            : "rule",
       resolutionSource: resolved.kind === "target" ? resolved.resolutionSource : resolved.kind,
       input: {
         taskPreference,
@@ -286,6 +366,15 @@ export async function runTask(
         kind: resolved.kind,
         reason: resolved.reason,
         ...("route" in resolved && resolved.route ? { considered: resolved.route.considered } : {}),
+        // M5.5 RoutingAudit: o que o Jev disse e o que a política fez com isso.
+        ...(semanticDecision ? { semantic: semanticDecision } : {}),
+        ...(semanticError ? { semanticError } : {}),
+        ...(resolved.kind === "target" && resolved.policy
+          ? {
+              overriddenByPolicy: resolved.policy.overriddenByPolicy,
+              suggested: resolved.policy.suggested,
+            }
+          : {}),
       },
       finalTarget: resolved.kind === "target" ? resolved.target : null,
     });
@@ -382,6 +471,7 @@ export async function runTask(
               task: { title: task.title, description: task.description, kind: task.kind },
               dependencies,
               ...(handover ? { handover } : {}),
+              ...(memory ? { memory } : {}),
               resultPath,
             }),
             cwd,
