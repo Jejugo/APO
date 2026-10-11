@@ -622,7 +622,7 @@ Com ele, failover, recovery, paralelismo, conflitos de merge e loops de review s
 
 Convenção: cada fase lista **entregas** (numeradas, cada uma do tamanho de um commit ou PR), **testes obrigatórios** e o **gate de saída**. As estimativas estão em semanas de um dev com agentes e somam o intervalo do ROADMAP.md.
 
-**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → **M6**. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
+**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
 
 | Entrega | De | Para | Motivo |
 |---|---|---|---|
@@ -981,6 +981,8 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 ### M6 — Lead conversacional e homelab
 
+> **M6 ✅ (2026-10-11).** `apo chat` com ações estruturadas e replan; APO rodando na VM do homelab como serviço systemd (usuário `apo`, Postgres nativo, acesso pelo Tailscale com token, recovery no boot). Runbook em `docs/homelab.md`. Gate abaixo com evidências.
+
 **Objetivo:** usar o APO de verdade, conversando com o Lead, rodando na VM de forma resiliente.
 **Estimativa:** 1,5 a 2,5 semanas.
 
@@ -1006,7 +1008,7 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 #### Gate de saída
 
-- [ ] Reiniciar a VM no meio de uma Feature e, após o boot, a Feature retoma sozinha. — **pendente**: depende dos logins dos CLIs no usuário `apo` (feitos pelo usuário) e de autorização para reiniciar a VM, que roda outros serviços.
+- [x] Reiniciar a VM no meio de uma Feature e, após o boot, a Feature retoma sozinha — `sudo systemctl reboot` com o worker da Task #1 rodando; a VM voltou em <30 s, Postgres/Tailscale/`apo.service` subiram sozinhos, o recovery marcou o attempt como `interrupted` e retomou a Feature com um attempt novo na mesma Task; ela seguiu por gates, review (Codex achou corte de emoji ao meio em UTF-16), correção, e chegou a `awaiting_approval`.
 - [x] Uma Feature completa é criada, ajustada e aprovada só pelo `apo chat` — E2E real: `isPalindrome` criada pelo chat, requisito alterado com a Feature rodando (replan segurou e cancelou a Task não iniciada e criou as novas), review no Codex achou um bug real (contagem UTF-16), correção, aprovação pelo chat → PR #3.
 - [x] O usuário `apo` não consegue ler `/home/jeff` nem usar sudo — verificado na VM: `Permission denied` em `/home/jeff`, sudo negado, sem acesso ao socket do Docker; dentro do sandbox do serviço, `/home` só mostra `apo` e o sistema é somente leitura (`systemd-analyze security`: 5.8).
 
