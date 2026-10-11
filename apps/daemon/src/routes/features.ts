@@ -534,6 +534,17 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
     if (!wasRunning && feature.status === "awaiting_approval") {
       startResume(id, { action: "cancel" });
       wasRunning = true;
+    } else if (!wasRunning && !["completed", "cancelled", "failed"].includes(feature.status)) {
+      // Parada (needs_human, paused, paused_capacity…): não há graph rodando
+      // para disputar o status, então a rota encerra direto.
+      await deps.features.updateStatus(id, "cancelled");
+      await emitEvent(deps.events, deps.logger, {
+        type: "feature.cancelled",
+        projectId: feature.projectId,
+        featureId: id,
+        payload: { reason: `cancelada com a Feature parada (${feature.status})` },
+      });
+      return { ...feature, status: "cancelled", cancelRequested: true, wasRunning: false };
     }
     await emitEvent(deps.events, deps.logger, { type: "feature.cancel_requested", featureId: id });
     return { ...feature, cancelRequested: true, wasRunning };
