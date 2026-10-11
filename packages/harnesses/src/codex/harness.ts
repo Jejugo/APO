@@ -16,6 +16,7 @@ import {
   findCodexTurnFailed,
   parseCodexJsonl,
 } from "./classify-failure.js";
+import { stripIntroducedNulls } from "./strict-schema.js";
 import { prepareCodexTempFiles, readLastMessage } from "./temp-files.js";
 
 export class CodexHarness implements AgentHarness {
@@ -127,7 +128,7 @@ async function run(
     let structuredOutput: unknown;
     if (input.outputSchema && finalMessage !== undefined) {
       try {
-        structuredOutput = JSON.parse(finalMessage);
+        structuredOutput = stripIntroducedNulls(JSON.parse(finalMessage), input.outputSchema);
       } catch {
         return {
           outcome: "failure",

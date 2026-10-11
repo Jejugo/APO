@@ -1,6 +1,8 @@
 // ApoNativeEngine (ADR 0003): o graph de uma Feature.
 //
-//   triage → plan → execute_wave ⇄ (próxima onda) → verify → complete
+//   triage → plan → execute_wave → handle_plan_changes ⇄ (próxima onda)
+//     → quality → review → prepare_delivery → await_approval → create_pr → complete
+//                  ↑ gate/requisito/finding falhou: Tasks corretivas (fixing) → execute_wave
 //
 // - plan (M2.5): usa o plano já gerado e validado na criação da Feature
 //   (`features.plan`) ou cai para uma Task só. Cria a branch e a worktree de
@@ -9,7 +11,16 @@
 //   dependências já foram integradas, cada uma com failover próprio
 //   (task-runner.ts), e então faz merge `--no-ff` das concluídas na integração,
 //   em ordem. Conflito → `merge --abort` + Task corretiva anexada à Feature.
-// - verify: worktree de integração (prepare + testes do project.yaml).
+// - handle_plan_changes (M4.6): o Lead decide os planChangeRequests da onda.
+// - quality (M4.1): build → lint → typecheck → tests na worktree de integração.
+// - review (M4.2/M4.3): requisitos (Lead) + findings (Reviewer, de preferência
+//   em outro provider). Falhas viram Tasks corretivas (M4.5), até
+//   review.maxFixIterations; acima disso, needs_human.
+// - prepare_delivery (M4.4/M4.7): completion contract — única porta para
+//   awaiting_approval — e resumo de entrega.
+// - await_approval (M4.8): interrupt(); `apo approve|reject` retomam com
+//   Command({ resume }). Sobrevive a restart (checkpoint no Postgres).
+// - create_pr (M4.9): push + `gh pr create`. Nunca faz merge.
 //
 // Limitação aceita (TECHNICAL_PLAN.md, "barreira de onda"): uma Task da onda
 // seguinte espera a onda inteira terminar, mesmo que dependa só de uma Task
@@ -18,22 +29,38 @@
 // Os nodes são idempotentes: recovery (M1.13) e saída de paused_capacity
 // (M3.9) re-invocam o graph do zero.
 
+import { randomUUID } from "node:crypto";
+import { GENERIC_ROLE_ID, loadRoleRegistry } from "@apo/config";
+import type { ProviderId } from "@apo/domain";
 import { emitEvent } from "@apo/observability";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
-import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
+import { Annotation, END, START, StateGraph, interrupt } from "@langchain/langgraph";
 import { appendTasks } from "./append-tasks.js";
 import type { AttemptControl } from "./attempt-control.js";
-import { candidatesOf } from "./harness-registry.js";
-import { FeaturePlanSchema, singleTaskPlan, validatePlan } from "./plan.js";
+import {
+  type RequirementCheck,
+  type ReviewFinding,
+  type Severity,
+  evaluateCompletion,
+  isBlocking,
+} from "./completion.js";
+import { GhPullRequestCreator, buildDeliverySummary } from "./delivery.js";
+import { candidatesOf, findTarget } from "./harness-registry.js";
+import { pickJudge } from "./judge.js";
+import { PLAN_CHANGE_REQUEST, PlanChangeRequestSchema, decidePlanChange } from "./plan-changes.js";
+import { type FeaturePlan, FeaturePlanSchema, singleTaskPlan, validatePlan } from "./plan.js";
+import { type GateResult, QUALITY_GATES, type QualityGate, runQualityGates } from "./quality.js";
+import { integrationDiff, reviewIntegration, verifyRequirements } from "./review.js";
 import {
   type EngineDeps,
   type FeatureContext,
   type TaskRunOutcome,
   runTask,
 } from "./task-runner.js";
-import { verifyIntegration } from "./verify.js";
+import { loadProjectConfig } from "./verify.js";
 import {
   ensureIntegrationWorktree,
+  hasNewCommits,
   integrationBranchName,
   integrationWorktreePath,
   mergeIntoIntegration,
@@ -44,6 +71,11 @@ export { DEFAULT_TASK_TIMEOUT_MS } from "./task-runner.js";
 type Outcome =
   | "continue"
   | "integrated"
+  | "gates_passed"
+  | "ready"
+  | "awaiting"
+  | "deliver"
+  | "approved"
   | "success"
   | "failure"
   | "cancelled"
@@ -71,6 +103,20 @@ export type FeatureGraphDeps = EngineDeps;
 
 const TERMINAL_TASK = new Set(["completed", "failed", "cancelled", "needs_human"]);
 
+const DEFAULT_JUDGE_TIMEOUT_MS = 15 * 60_000;
+
+/** Resposta de `apo approve` / `apo reject` / cancel, via Command({ resume }). */
+export interface ApprovalDecision {
+  action: "approve" | "reject" | "cancel";
+  reason?: string;
+}
+
+interface Corrective {
+  title: string;
+  description: string;
+  expectedPaths: string[];
+}
+
 function contextOf(state: typeof FeatureGraphState.State): FeatureContext {
   return {
     featureId: state.featureId,
@@ -80,6 +126,23 @@ function contextOf(state: typeof FeatureGraphState.State): FeatureContext {
     objective: state.objective,
     worktreesRoot: state.worktreesRoot,
   };
+}
+
+function abortSignalOf(runtime: {
+  configurable?: Record<string, unknown> | undefined;
+}): AbortSignal {
+  const control = runtime.configurable?.attemptControl as AttemptControl | undefined;
+  return control?.featureSignal() ?? new AbortController().signal;
+}
+
+function lastDetails<T>(
+  rows: Array<{ gate: string; details: unknown }>,
+  gate: string,
+  key: string,
+): T | undefined {
+  const row = [...rows].reverse().find((candidate) => candidate.gate === gate);
+  const value = (row?.details as Record<string, unknown> | null | undefined)?.[key];
+  return value === null || value === undefined ? undefined : (value as T);
 }
 
 /** Pior resultado da onda decide o rumo da Feature. */
@@ -100,6 +163,107 @@ function aggregate(outcomes: TaskRunOutcome[]): { outcome: Outcome; reason?: str
 }
 
 export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseCheckpointSaver) {
+  const judgeTimeout = deps.judgeTimeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS;
+
+  function reviewConfig(repoPath: string): {
+    blockingSeverity: Severity;
+    maxFixIterations: number;
+  } {
+    const review = loadProjectConfig(repoPath).review;
+    return {
+      blockingSeverity: review?.blockingSeverity ?? "medium",
+      maxFixIterations: review?.maxFixIterations ?? 3,
+    };
+  }
+
+  /** M4.5: nova rodada de correção, ou needs_human se o limite estourou. */
+  async function startFixRound(
+    state: typeof FeatureGraphState.State,
+    items: Corrective[],
+    origin: string,
+    reason: string,
+  ): Promise<{ outcome: Outcome; failureReason?: string | null }> {
+    const feature = await deps.features.getById(state.featureId);
+    const iteration = feature?.fixIteration ?? 0;
+    const { maxFixIterations } = reviewConfig(state.repoPath);
+    if (iteration >= maxFixIterations) {
+      return {
+        outcome: "needs_human",
+        failureReason: `limite de ${maxFixIterations} rodadas de correção atingido: ${reason}`,
+      };
+    }
+    const plan: FeaturePlan = {
+      tasks: items.map((item, index) => ({
+        key: `f${index}`,
+        title: item.title,
+        description: item.description,
+        kind: "write",
+        role: GENERIC_ROLE_ID,
+        expectedPaths: item.expectedPaths,
+        dependsOn: [],
+      })),
+    };
+    const ids = await appendTasks(deps.tasks, state.featureId, plan, origin);
+    await deps.features.update(state.featureId, { fixIteration: iteration + 1 });
+    await deps.features.updateStatus(state.featureId, "fixing");
+    await emitEvent(deps.events, deps.logger, {
+      type: "feature.fixing",
+      projectId: state.projectId,
+      featureId: state.featureId,
+      payload: { iteration: iteration + 1, origin, reason, taskIds: ids },
+    });
+    return { outcome: "continue", failureReason: null };
+  }
+
+  /**
+   * Objetivo + o que entrou depois: motivos de reject (M4.8) e pedidos
+   * absorvidos (M2.13). Sem isso, a verificação de requisitos só olharia o
+   * pedido original e aprovaria um ajuste humano não feito.
+   */
+  async function objectiveWithAdditions(state: typeof FeatureGraphState.State): Promise<string> {
+    const additions: string[] = [];
+    for (const event of await deps.events.listByFeature(state.featureId)) {
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      if (event.type === "feature.rejected" && typeof payload.reason === "string") {
+        additions.push(`(pedido na revisão humana) ${payload.reason}`);
+      }
+      if (
+        event.type === "feature.request_absorbed" &&
+        typeof payload.originalObjective === "string"
+      ) {
+        additions.push(`(pedido absorvido) ${payload.originalObjective}`);
+      }
+    }
+    return additions.length === 0
+      ? state.objective
+      : `${state.objective}\n\nRequisitos adicionados depois (também fazem parte do objetivo):\n${additions.map((item) => `- ${item}`).join("\n")}`;
+  }
+
+  async function latestGates(featureId: string, iteration: number) {
+    const rows = await deps.qualityResults.listByFeature(featureId);
+    const gates: Partial<Record<QualityGate, "passed" | "failed" | "skipped">> = {};
+    for (const row of rows) {
+      if (row.iteration !== iteration) continue;
+      if ((QUALITY_GATES as readonly string[]).includes(row.gate)) {
+        gates[row.gate as QualityGate] = row.status as "passed" | "failed" | "skipped";
+      }
+    }
+    return gates;
+  }
+
+  /** Provider que mais implementou (dica preferDifferentProviderFrom, M4.3). */
+  async function mostUsedProvider(featureId: string): Promise<ProviderId | undefined> {
+    const counts = new Map<ProviderId, number>();
+    for (const task of await deps.tasks.listByFeature(featureId)) {
+      for (const attempt of await deps.taskAttempts.listByTask(task.id)) {
+        if (attempt.status !== "completed" || !attempt.targetId) continue;
+        const provider = findTarget(deps.targets, attempt.targetId)?.candidate.provider;
+        if (provider) counts.set(provider, (counts.get(provider) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+  }
+
   const graph = new StateGraph(FeatureGraphState)
     .addNode("triage", async (state) => {
       await deps.features.updateStatus(state.featureId, "planning");
@@ -247,21 +411,354 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
       const result = aggregate(outcomes);
       return { outcome: result.outcome, failureReason: result.reason ?? null };
     })
-    .addNode("verify", async (state) => {
+    .addNode("handle_plan_changes", async (state, runtime) => {
+      if (state.outcome !== "continue" && state.outcome !== "integrated") return {};
+      const pending = await deps.agentMessages.listPending(state.featureId, PLAN_CHANGE_REQUEST);
+      if (pending.length === 0) return {};
+
+      const judge = pickJudge(deps);
+      if (!judge) {
+        return {
+          outcome: "paused_capacity" as const,
+          failureReason: "nenhum target para o Lead decidir mudanças de plano",
+        };
+      }
+      const signal = abortSignalOf(runtime);
+      const roleIds = [...(deps.loadRoles ?? loadRoleRegistry)(state.repoPath).keys()];
+      let created = 0;
+      for (const message of pending) {
+        const request = PlanChangeRequestSchema.parse(message.payload);
+        const tasks = await deps.tasks.listByFeature(state.featureId);
+        const decision = await decidePlanChange(
+          judge.runner,
+          {
+            objective: state.objective,
+            request,
+            existingTasks: tasks.map((task) => `#${task.seq} ${task.title} [${task.status}]`),
+            roleIds,
+            cwd: integrationWorktreePath(state.worktreesRoot, state.featureId),
+            timeoutMs: judgeTimeout,
+          },
+          signal,
+        );
+        if (!decision || decision.decision === "ask_human") {
+          await deps.agentMessages.resolve(
+            message.id,
+            "escalated",
+            decision ?? { reason: "Lead não decidiu" },
+          );
+          await emitEvent(deps.events, deps.logger, {
+            type: "plan_change.escalated",
+            projectId: state.projectId,
+            featureId: state.featureId,
+            payload: { request, reason: decision?.reason ?? "Lead não decidiu" },
+          });
+          return {
+            outcome: "needs_human" as const,
+            failureReason: `mudança de plano precisa de decisão humana: ${request.title}`,
+          };
+        }
+        if (decision.decision === "reject") {
+          await deps.agentMessages.resolve(message.id, "rejected", decision);
+        } else if (decision.task) {
+          const ids = await appendTasks(
+            deps.tasks,
+            state.featureId,
+            { tasks: [{ key: "pc", ...decision.task, dependsOn: [] }] },
+            "plan_change",
+          );
+          await deps.agentMessages.resolve(message.id, "accepted", { ...decision, taskIds: ids });
+          created += ids.length;
+        }
+        await emitEvent(deps.events, deps.logger, {
+          type: `plan_change.${decision.decision === "reject" ? "rejected" : "accepted"}`,
+          projectId: state.projectId,
+          featureId: state.featureId,
+          payload: { request, reason: decision.reason },
+        });
+      }
+      return created > 0 && state.outcome === "integrated" ? { outcome: "continue" as const } : {};
+    })
+    .addNode("quality", async (state) => {
       // Tasks podem ter sido anexadas depois da última onda (absorção, M2.13).
       const tasks = await deps.tasks.listByFeature(state.featureId);
       if (tasks.some((task) => task.status !== "completed")) {
         return { outcome: "continue" as const };
       }
-      const verification = await verifyIntegration(
+      const integrationPath = integrationWorktreePath(state.worktreesRoot, state.featureId);
+      if (!(await hasNewCommits(integrationPath, state.defaultBranch))) {
+        return {
+          outcome: "failure" as const,
+          failureReason: "nenhum commit novo na branch de integração",
+        };
+      }
+
+      await deps.features.updateStatus(state.featureId, "validating");
+      const iteration = (await deps.features.getById(state.featureId))?.fixIteration ?? 0;
+      const results = await runQualityGates(
         state.repoPath,
-        integrationWorktreePath(state.worktreesRoot, state.featureId),
-        state.defaultBranch,
+        integrationPath,
         deps.workerEnv?.(state.repoPath),
       );
-      return verification.passed
-        ? { outcome: "success" as const }
-        : { outcome: "failure" as const, failureReason: verification.reason ?? null };
+      for (const result of results) {
+        await deps.qualityResults.create({
+          featureId: state.featureId,
+          iteration,
+          gate: result.gate,
+          status: result.status,
+          command: result.command ?? null,
+          output: result.output ?? null,
+          durationMs: result.durationMs,
+        });
+      }
+      await emitEvent(deps.events, deps.logger, {
+        type: "quality.completed",
+        projectId: state.projectId,
+        featureId: state.featureId,
+        payload: { iteration, gates: Object.fromEntries(results.map((r) => [r.gate, r.status])) },
+      });
+
+      const failed = results.find((result) => result.status === "failed");
+      if (!failed) return { outcome: "gates_passed" as const };
+      return startFixRound(
+        state,
+        [
+          {
+            title: `Corrigir o gate ${failed.gate}`,
+            description: [
+              `O quality gate "${failed.gate}" falhou na branch de integração${failed.command ? ` (comando: ${failed.command})` : ""}.`,
+              "Corrija a causa no código, sem desligar regras, apagar testes ou mudar a configuração do gate.",
+              "Saída (final):",
+              failed.output ?? "",
+            ].join("\n\n"),
+            expectedPaths: [],
+          },
+        ],
+        "quality_fix",
+        `gate ${failed.gate} falhou`,
+      );
+    })
+    .addNode("review", async (state, runtime) => {
+      await deps.features.updateStatus(state.featureId, "reviewing");
+      const integrationPath = integrationWorktreePath(state.worktreesRoot, state.featureId);
+      const iteration = (await deps.features.getById(state.featureId))?.fixIteration ?? 0;
+      const signal = abortSignalOf(runtime);
+
+      const lead = pickJudge(deps);
+      const reviewer = pickJudge(deps, await mostUsedProvider(state.featureId));
+      if (!lead || !reviewer) {
+        return {
+          outcome: "paused_capacity" as const,
+          failureReason: "nenhum target para o review",
+        };
+      }
+      const gates = await latestGates(state.featureId, iteration);
+      const context = {
+        objective: await objectiveWithAdditions(state),
+        diff: await integrationDiff(integrationPath, state.defaultBranch),
+        gatesSummary: QUALITY_GATES.map((gate) => `${gate}=${gates[gate] ?? "não rodou"}`).join(
+          ", ",
+        ),
+        cwd: integrationPath,
+        timeoutMs: judgeTimeout,
+      };
+
+      const requirements = await verifyRequirements(lead.runner, context, signal);
+      await deps.qualityResults.create({
+        featureId: state.featureId,
+        iteration,
+        gate: "requirements",
+        status: requirements.checks
+          ? requirements.checks.every((c) => c.satisfied)
+            ? "passed"
+            : "failed"
+          : "error",
+        output: requirements.error ?? null,
+        details: { checks: requirements.checks ?? null, target: lead.entry.candidate.targetId },
+      });
+      const review = await reviewIntegration(reviewer.runner, context, signal);
+      await deps.qualityResults.create({
+        featureId: state.featureId,
+        iteration,
+        gate: "review",
+        status: review.findings ? "passed" : "error",
+        output: review.error ?? null,
+        details: { findings: review.findings ?? null, target: reviewer.entry.candidate.targetId },
+      });
+      if (!requirements.checks || !review.findings) {
+        return {
+          outcome: "needs_human" as const,
+          failureReason: `review não pôde rodar: ${requirements.error ?? review.error}`,
+        };
+      }
+
+      const verdict = evaluateCompletion({
+        gates,
+        requirements: requirements.checks,
+        findings: review.findings,
+        blockingSeverity: reviewConfig(state.repoPath).blockingSeverity,
+      });
+      await emitEvent(deps.events, deps.logger, {
+        type: "review.completed",
+        projectId: state.projectId,
+        featureId: state.featureId,
+        payload: {
+          iteration,
+          reviewer: reviewer.entry.candidate.targetId,
+          findings: review.findings.length,
+          blocking: verdict.blockingFindings.length,
+          missingRequirements: verdict.missingRequirements.length,
+        },
+      });
+      if (verdict.ready) return { outcome: "ready" as const };
+
+      const corrective: Corrective[] = [
+        ...verdict.missingRequirements.map((check) => ({
+          title: `Atender requisito: ${check.requirement}`.slice(0, 120),
+          description: `A verificação de requisitos concluiu que este requisito do objetivo não está atendido: ${check.requirement}${check.evidence ? `\n\nEvidência: ${check.evidence}` : ""}`,
+          expectedPaths: [],
+        })),
+        ...verdict.blockingFindings.map((finding) => ({
+          title: `Review (${finding.severity}): ${finding.description}`.slice(0, 120),
+          description: [
+            `Finding do review (${finding.severity})${finding.file ? ` em ${finding.file}` : ""}: ${finding.description}`,
+            finding.suggestedFix ? `Correção sugerida: ${finding.suggestedFix}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+          expectedPaths: finding.file ? [finding.file] : [],
+        })),
+      ];
+      return startFixRound(state, corrective, "review_fix", verdict.reasons.join("; "));
+    })
+    .addNode("prepare_delivery", async (state) => {
+      const feature = await deps.features.getById(state.featureId);
+      const iteration = feature?.fixIteration ?? 0;
+      const rows = (await deps.qualityResults.listByFeature(state.featureId)).filter(
+        (row) => row.iteration === iteration,
+      );
+      const requirements = lastDetails<RequirementCheck[]>(rows, "requirements", "checks");
+      const findings = lastDetails<ReviewFinding[]>(rows, "review", "findings");
+      const gates = await latestGates(state.featureId, iteration);
+
+      // M4.4: única porta para awaiting_approval — recalculado do que foi persistido.
+      const verdict = evaluateCompletion({
+        gates,
+        requirements,
+        findings,
+        blockingSeverity: reviewConfig(state.repoPath).blockingSeverity,
+      });
+      if (!verdict.ready) {
+        return {
+          outcome: "failure" as const,
+          failureReason: `completion contract não satisfeito: ${verdict.reasons.join("; ")}`,
+        };
+      }
+
+      const tasks = (await deps.tasks.listByFeature(state.featureId)).sort((a, b) => a.seq - b.seq);
+      const summary = buildDeliverySummary({
+        objective: state.objective,
+        integrationBranch: integrationBranchName(state.featureId),
+        tasks: tasks.map((task) => ({
+          seq: task.seq,
+          title: task.title,
+          summary: task.summary,
+          actualChangedPaths: task.actualChangedPaths,
+        })),
+        gates: rows
+          .filter((row) => (QUALITY_GATES as readonly string[]).includes(row.gate))
+          .map((row) => ({
+            gate: row.gate as QualityGate,
+            status: row.status as GateResult["status"],
+            ...(row.command ? { command: row.command } : {}),
+            durationMs: row.durationMs ?? 0,
+          })),
+        requirements: requirements ?? [],
+        findings: findings ?? [],
+        verdict,
+        fixIterations: iteration,
+      });
+      await deps.features.update(state.featureId, { deliverySummary: summary });
+
+      if (!loadProjectConfig(state.repoPath).git?.requirePrApproval) {
+        return { outcome: "deliver" as const };
+      }
+      await deps.features.updateStatus(state.featureId, "awaiting_approval");
+      await emitEvent(deps.events, deps.logger, {
+        type: "feature.awaiting_pr_approval",
+        projectId: state.projectId,
+        featureId: state.featureId,
+        payload: { integrationBranch: integrationBranchName(state.featureId) },
+      });
+      return { outcome: "awaiting" as const };
+    })
+    .addNode("await_approval", async (state) => {
+      // Sem efeitos colaterais antes do interrupt: o node re-executa do início
+      // quando é retomado.
+      const decision = interrupt({ featureId: state.featureId }) as ApprovalDecision;
+      if (decision.action === "approve") {
+        await emitEvent(deps.events, deps.logger, {
+          type: "feature.approved",
+          projectId: state.projectId,
+          featureId: state.featureId,
+        });
+        return { outcome: "approved" as const };
+      }
+      if (decision.action === "cancel") {
+        return { outcome: "cancelled" as const, failureReason: "Feature cancelada na aprovação" };
+      }
+      const reason = decision.reason?.trim() || "rejeitada sem motivo";
+      await deps.features.updateStatus(state.featureId, "rejected");
+      await emitEvent(deps.events, deps.logger, {
+        type: "feature.rejected",
+        projectId: state.projectId,
+        featureId: state.featureId,
+        payload: { reason },
+      });
+      return startFixRound(
+        state,
+        [
+          {
+            title: "Ajustar conforme a revisão humana",
+            description: `O PR foi rejeitado na aprovação com este motivo:\n\n${reason}\n\nFaça os ajustes pedidos.`,
+            expectedPaths: [],
+          },
+        ],
+        "human_fix",
+        `rejeitada: ${reason}`,
+      );
+    })
+    .addNode("create_pr", async (state) => {
+      await deps.features.updateStatus(state.featureId, "delivering");
+      const feature = await deps.features.getById(state.featureId);
+      if (feature?.prUrl) return { outcome: "success" as const };
+      let pr: { url: string };
+      try {
+        pr = await (deps.pullRequests ?? new GhPullRequestCreator()).create({
+          repoPath: state.repoPath,
+          integrationPath: integrationWorktreePath(state.worktreesRoot, state.featureId),
+          branch: integrationBranchName(state.featureId),
+          base: state.defaultBranch,
+          title:
+            state.objective.length > 72 ? `${state.objective.slice(0, 69)}...` : state.objective,
+          body: feature?.deliverySummary ?? state.objective,
+        });
+      } catch (error) {
+        // Sem remote, sem `gh auth`, push recusado: o humano resolve e aprova de novo.
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          outcome: "needs_human" as const,
+          failureReason: `falha ao abrir o PR: ${message.slice(0, 500)}`,
+        };
+      }
+      await deps.features.update(state.featureId, { prUrl: pr.url });
+      await emitEvent(deps.events, deps.logger, {
+        type: "feature.pr_created",
+        projectId: state.projectId,
+        featureId: state.featureId,
+        payload: { url: pr.url },
+      });
+      return { outcome: "success" as const };
     })
     .addNode("complete", async (state) => {
       // Única escrita do status terminal da Feature.
@@ -286,8 +783,11 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
       const payload: Record<string, unknown> = {};
       if (state.failureReason) payload.reason = state.failureReason;
       if (resetAt) payload.resumeAt = resetAt.toISOString();
-      if (finalStatus === "completed")
+      if (finalStatus === "completed") {
         payload.integrationBranch = integrationBranchName(state.featureId);
+        const prUrl = (await deps.features.getById(state.featureId))?.prUrl;
+        if (prUrl) payload.prUrl = prUrl;
+      }
 
       await emitEvent(deps.events, deps.logger, {
         type: `feature.${finalStatus}`,
@@ -300,16 +800,43 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
     .addEdge(START, "triage")
     .addEdge("triage", "plan")
     .addEdge("plan", "execute_wave")
-    .addConditionalEdges("execute_wave", (state) =>
+    .addEdge("execute_wave", "handle_plan_changes")
+    .addConditionalEdges("handle_plan_changes", (state) =>
       state.outcome === "continue"
         ? "execute_wave"
         : state.outcome === "integrated"
-          ? "verify"
+          ? "quality"
           : "complete",
     )
-    .addConditionalEdges("verify", (state) =>
-      state.outcome === "continue" ? "execute_wave" : "complete",
+    .addConditionalEdges("quality", (state) =>
+      state.outcome === "continue"
+        ? "execute_wave"
+        : state.outcome === "gates_passed"
+          ? "review"
+          : "complete",
     )
+    .addConditionalEdges("review", (state) =>
+      state.outcome === "continue"
+        ? "execute_wave"
+        : state.outcome === "ready"
+          ? "prepare_delivery"
+          : "complete",
+    )
+    .addConditionalEdges("prepare_delivery", (state) =>
+      state.outcome === "awaiting"
+        ? "await_approval"
+        : state.outcome === "deliver"
+          ? "create_pr"
+          : "complete",
+    )
+    .addConditionalEdges("await_approval", (state) =>
+      state.outcome === "approved"
+        ? "create_pr"
+        : state.outcome === "continue"
+          ? "execute_wave"
+          : "complete",
+    )
+    .addEdge("create_pr", "complete")
     .addEdge("complete", END);
 
   return graph.compile({ checkpointer });

@@ -4,6 +4,7 @@ import type { ExecutionPreference } from "@apo/domain";
 import { emitEvent } from "@apo/observability";
 import {
   AgentRunnerImpl,
+  type ApprovalDecision,
   DEFAULT_TASK_TIMEOUT_MS,
   type FeaturePlan,
   FeaturePlanSchema,
@@ -46,7 +47,12 @@ const preferenceSchema = z.object({
 
 const answerSchema = z.object({ answer: z.string() });
 
+const rejectSchema = z.object({ reason: z.string().min(1) });
+
+// Onde `apo logs -f` para de acompanhar. awaiting_approval não é terminal,
+// mas é onde o APO espera o humano (M4.8).
 const TERMINAL_STATUSES = new Set([
+  "awaiting_approval",
   "completed",
   "failed",
   "cancelled",
@@ -86,6 +92,12 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       .catch((error: unknown) => {
         deps.logger.error({ error, featureId: feature.id }, `${label} falhou`);
       });
+  }
+
+  function startResume(featureId: string, decision: ApprovalDecision): void {
+    void deps.featureRunner.resume(featureId, decision).catch((error: unknown) => {
+      deps.logger.error({ error, featureId }, `retomada da aprovação (${decision.action}) falhou`);
+    });
   }
 
   /** expectedPaths de uma Feature ativa: das Tasks, ou do plano se ainda não há Tasks. */
@@ -366,6 +378,10 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       reply.code(404);
       return { error: "feature não encontrada" };
     }
+    if (feature.status === "awaiting_approval") {
+      reply.code(409);
+      return { error: "a Feature espera aprovação: use `apo approve` ou `apo reject`" };
+    }
     const project = await deps.projects.getById(feature.projectId);
     if (!project) {
       reply.code(404);
@@ -433,6 +449,55 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
     reply.raw.end();
   });
 
+  // M4.8 — `apo approve` / `apo reject --reason`: respondem ao interrupt.
+  app.post("/features/:id/approve", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const feature = await deps.features.getById(id);
+    if (!feature) {
+      reply.code(404);
+      return { error: "feature não encontrada" };
+    }
+    if (feature.status !== "awaiting_approval") {
+      reply.code(409);
+      return { error: `a Feature não está esperando aprovação (status: ${feature.status})` };
+    }
+    startResume(id, { action: "approve" });
+    return { featureId: id, decision: "approve" };
+  });
+
+  app.post("/features/:id/reject", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { reason } = rejectSchema.parse(request.body);
+    const feature = await deps.features.getById(id);
+    if (!feature) {
+      reply.code(404);
+      return { error: "feature não encontrada" };
+    }
+    if (feature.status !== "awaiting_approval") {
+      reply.code(409);
+      return { error: `a Feature não está esperando aprovação (status: ${feature.status})` };
+    }
+    startResume(id, { action: "reject", reason });
+    return { featureId: id, decision: "reject", reason };
+  });
+
+  // Gates, requisitos e review de todas as iterações + resumo de entrega.
+  app.get("/features/:id/quality", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const feature = await deps.features.getById(id);
+    if (!feature) {
+      reply.code(404);
+      return { error: "feature não encontrada" };
+    }
+    return {
+      status: feature.status,
+      fixIteration: feature.fixIteration,
+      prUrl: feature.prUrl,
+      deliverySummary: feature.deliverySummary,
+      results: await deps.qualityResults.listByFeature(id),
+    };
+  });
+
   app.post("/features/:id/cancel", async (request, reply) => {
     const { id } = request.params as { id: string };
     const feature = await deps.features.getById(id);
@@ -440,9 +505,14 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       reply.code(404);
       return { error: "feature não encontrada" };
     }
-    // Só sinaliza o AttemptControl — quem escreve o status terminal
-    // ("cancelled") é sempre o node 'complete' do graph, nunca esta rota.
-    const wasRunning = deps.featureRunner.cancel(id);
+    // Só sinaliza — quem escreve o status terminal ("cancelled") é sempre o
+    // node 'complete' do graph, nunca esta rota. Parada na aprovação, o graph
+    // não está rodando: o cancelamento entra como resposta ao interrupt.
+    let wasRunning = deps.featureRunner.cancel(id);
+    if (!wasRunning && feature.status === "awaiting_approval") {
+      startResume(id, { action: "cancel" });
+      wasRunning = true;
+    }
     await emitEvent(deps.events, deps.logger, { type: "feature.cancel_requested", featureId: id });
     return { ...feature, cancelRequested: true, wasRunning };
   });

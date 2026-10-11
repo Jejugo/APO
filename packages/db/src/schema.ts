@@ -121,6 +121,8 @@ export const features = pgTable("features", {
   integrationBranch: text("integration_branch"),
   fixIteration: integer("fix_iteration").notNull().default(0),
   prUrl: text("pr_url"),
+  /** M4.7: resumo de entrega (mudanças, gates, review) — vira o corpo do PR. */
+  deliverySummary: text("delivery_summary"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -239,4 +241,39 @@ export const events = pgTable("events", {
   taskId: text("task_id"),
   payload: jsonb("payload"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// M4.1/M4.2/M4.3 — um registro por gate por iteração de correção. `gate` é
+// build | lint | typecheck | tests | requirements | review.
+export const qualityResults = pgTable("quality_results", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  featureId: text("feature_id")
+    .notNull()
+    .references(() => features.id),
+  iteration: integer("iteration").notNull(),
+  gate: text("gate").notNull(),
+  /** passed | failed | skipped (sem comando configurado — não bloqueia). */
+  status: text("status").notNull(),
+  command: text("command"),
+  output: text("output"),
+  details: jsonb("details"),
+  durationMs: integer("duration_ms"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// M4.6 — só `plan_change_request` por enquanto (a mensageria do M2.18 foi
+// adiada). Mesma tabela que a mensageria vai usar quando chegar.
+export const agentMessages = pgTable("agent_messages", {
+  id: text("id").primaryKey(),
+  featureId: text("feature_id")
+    .notNull()
+    .references(() => features.id),
+  fromTaskId: text("from_task_id").references(() => tasks.id),
+  type: text("type").notNull(),
+  payload: jsonb("payload").notNull(),
+  /** pending | accepted | rejected | escalated */
+  status: text("status").notNull().default("pending"),
+  resolution: jsonb("resolution"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
 });

@@ -7,12 +7,14 @@
 
 import type { ExecutionPreference } from "@apo/domain";
 import {
+  type ApprovalDecision,
   AttemptControl,
   type FeatureGraph,
   type FeatureGraphDeps,
   type FeatureGraphInput,
   buildFeatureGraph,
 } from "@apo/orchestrator";
+import { Command } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 
 export type FeatureRunInput = FeatureGraphInput;
@@ -36,20 +38,35 @@ export class FeatureRunner {
 
   /** Fire-and-forget pelo chamador — não bloqueia a resposta HTTP. */
   async run(input: FeatureRunInput): Promise<void> {
+    await this.invoke(input.featureId, input);
+  }
+
+  /**
+   * M4.8: responde ao interrupt do node await_approval. Funciona depois de um
+   * restart: o ponto de parada está no checkpoint do Postgres.
+   */
+  async resume(featureId: string, decision: ApprovalDecision): Promise<void> {
+    await this.invoke(featureId, new Command({ resume: decision }));
+  }
+
+  private async invoke(
+    featureId: string,
+    input: Parameters<FeatureGraph["invoke"]>[0],
+  ): Promise<void> {
     if (!this.graph) {
       throw new Error("FeatureRunner.setup() precisa ser chamado antes de run()");
     }
-    if (this.controls.has(input.featureId)) {
+    if (this.controls.has(featureId)) {
       return;
     }
     const control = new AttemptControl();
-    this.controls.set(input.featureId, control);
+    this.controls.set(featureId, control);
     try {
       await this.graph.invoke(input, {
-        configurable: { thread_id: input.featureId, attemptControl: control },
+        configurable: { thread_id: featureId, attemptControl: control },
       });
     } finally {
-      this.controls.delete(input.featureId);
+      this.controls.delete(featureId);
     }
   }
 

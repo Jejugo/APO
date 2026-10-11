@@ -26,6 +26,13 @@ export const PERSONAS: Record<string, PersonaDefinition> = {
       "em modo read-only: leia o que for necessário no repositório e responda SOMENTE " +
       "com um JSON que satisfaça o schema pedido, sem nenhum texto antes ou depois.",
   },
+  // M4.3 — revisor independente da implementação.
+  reviewer: {
+    systemPrompt:
+      "Você é o Reviewer do orquestrador APO: um revisor de código sênior, cético e objetivo. " +
+      "Você não implementou esta mudança. Trabalhe em modo read-only e responda SOMENTE com um " +
+      "JSON que satisfaça o schema pedido, sem nenhum texto antes ou depois.",
+  },
 };
 
 export interface AgentRunInput<T> {

@@ -15,6 +15,8 @@ export type AttemptAbortReason =
 export class AttemptControl {
   private readonly controllers = new Map<string, AbortController>();
   private cancelled = false;
+  /** Para chamadas de julgamento do graph (review, Lead), que não são attempts. */
+  private readonly feature = new AbortController();
 
   /** Chamado no início de cada attempt de uma Task. */
   newAttempt(taskId: string): AbortSignal {
@@ -30,12 +32,17 @@ export class AttemptControl {
     this.controllers.delete(taskId);
   }
 
+  featureSignal(): AbortSignal {
+    return this.feature.signal;
+  }
+
   isCancelled(): boolean {
     return this.cancelled;
   }
 
   cancel(): void {
     this.cancelled = true;
+    this.feature.abort({ type: "cancel" } satisfies AttemptAbortReason);
     for (const controller of this.controllers.values()) {
       controller.abort({ type: "cancel" } satisfies AttemptAbortReason);
     }

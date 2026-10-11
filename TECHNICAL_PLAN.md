@@ -622,7 +622,7 @@ Com ele, failover, recovery, paralelismo, conflitos de merge e loops de review s
 
 Convenção: cada fase lista **entregas** (numeradas, cada uma do tamanho de um commit ou PR), **testes obrigatórios** e o **gate de saída**. As estimativas estão em semanas de um dev com agentes e somam o intervalo do ROADMAP.md.
 
-**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → **M4** → M5 → M6. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
+**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → **M5** → M6. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
 
 | Entrega | De | Para | Motivo |
 |---|---|---|---|
@@ -884,6 +884,8 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 ### M4 — Quality gates, review, mudança de plano e entrega
 
+> **M4 ✅ (2026-10-10).** Graph: `execute_wave → handle_plan_changes → quality → review → prepare_delivery → await_approval → create_pr → complete`, com loop de correção (`fixing`) até `review.maxFixIterations`. Gate abaixo com evidências.
+
 **Objetivo:** o cenário da seção 38 do PLAN.md roda de ponta a ponta, sem Jev e sem memória.
 **Estimativa:** 1 a 2 semanas.
 
@@ -911,9 +913,17 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 #### Gate de saída
 
-- [ ] O cenário da seção 38 passa com `FakeHarness` no `pnpm test`.
-- [ ] O cenário da seção 38 passa uma vez com harnesses reais no `sample-repo`, gerando um PR de verdade num repo de teste.
-- [ ] Nenhum caminho do código leva a `awaiting_approval` sem passar pelo completion contract.
+- [x] O cenário da seção 38 passa com `FakeHarness` no `pnpm test` — `feature-graph.test.ts` ("E2E seção 38"): 3 Tasks paralelas, quota no meio de uma delas, handover para o outro provider, gates, reviewer com 2 problemas, 2 Tasks corretivas, gates de novo, aprovação, PR.
+- [x] O cenário da seção 38 passa uma vez com harnesses reais no `sample-repo`, gerando um PR de verdade num repo de teste — `Jejugo/apo-e2e-sample` (privado), PR #1: DAG de 2 Tasks no Claude Code, 4 gates reais (`tsc`, `biome`, `vitest`), requisitos (Lead) e review no **Codex** (provider diferente do que implementou), restart do daemon com a Feature parada na aprovação, `apo reject --reason` virando Task de ajuste e nova rodada, `apo approve` → push + `gh pr create`. PR aberto, sem merge. Quota e findings não foram provocados no real (não dá para forçar); estão cobertos pelo E2E com FakeHarness.
+- [x] Nenhum caminho do código leva a `awaiting_approval` sem passar pelo completion contract — teste de arquitetura varre `packages/*/src` e `apps/*/src`: uma única escrita do status, no `prepare_delivery`, depois de `evaluateCompletion(...)` e do `if (!verdict.ready)`.
+
+**Achados do E2E real:**
+- **Schema estrito do Codex, de novo.** O `--output-schema` exige que todo campo esteja em `required` (o review tem `file`/`suggestedFix` opcionais) — o review falhava com 400. O `CodexHarness` agora normaliza o schema recursivamente (todo campo obrigatório, os opcionais aceitam `null`) e remove da resposta os `null` que ele introduziu. Quem chama continua escrevendo um schema só.
+- **Sucesso atrasado limpava a quota esgotada.** No E2E com FakeHarness, Tasks paralelas que já estavam rodando no provider terminaram bem depois que outra bateu a quota, e o `recordSuccess` marcava o provider como `available` de novo — a retentativa voltava para um provider sem quota. Agora um sucesso só limpa `degraded`/`exhausted` se o trabalho começou depois da falha.
+- **Reject e absorção entram nos requisitos.** A verificação de requisitos passou a receber, além do objetivo, os motivos de reject e os pedidos absorvidos — senão ela aprovaria um ajuste humano que não foi feito.
+- **Falha ao abrir o PR** (sem remote, sem `gh auth`) vira `needs_human` com o motivo, em vez de deixar a Feature presa em `delivering`.
+- `apo logs -f` para em `awaiting_approval` e pergunta "Feature pronta. Deseja abrir o Pull Request?".
+- Limitação conhecida: o `prepare` (`pnpm install`) pode gerar um lockfile numa worktree e ele entra no commit da Task. No `sample-repo` (sem lockfile versionado) o PR levou um `pnpm-lock.yaml`; num repo real com lockfile versionado isso não muda nada.
 
 ---
 

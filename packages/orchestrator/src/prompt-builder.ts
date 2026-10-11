@@ -35,6 +35,8 @@ function reportInstructions(resultPath: string): string {
     '{"summary": "o que foi feito, em 1-3 frases", "artifacts": { ... }}',
     "Use `artifacts` para tudo que outra Task vai precisar consumir (ex.: contrato de API, nomes de",
     "funções/rotas criadas). Esse arquivo fica fora do repositório: não o commite.",
+    "Se descobrir que falta trabalho fora do escopo desta Task para o objetivo da Feature, não o faça:",
+    'peça em `"planChangeRequests": [{"title": "...", "description": "...", "reason": "..."}]`.',
   ].join("\n");
 }
 

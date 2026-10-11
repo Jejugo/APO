@@ -43,6 +43,13 @@
       "when": 1791602864104,
       "tag": "0005_daily_nightshade",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791667188296,
+      "tag": "0006_tan_mongu",
+      "breakpoints": true
     }
   ]
 }

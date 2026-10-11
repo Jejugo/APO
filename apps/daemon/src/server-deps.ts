@@ -4,6 +4,7 @@ import type {
   HandoverRepository,
   ProjectAgentRepository,
   ProjectRepository,
+  QualityResultRepository,
   RoutingDecisionRepository,
   TaskAttemptRepository,
   TaskRepository,
@@ -23,6 +24,7 @@ export interface ServerDeps {
   events: EventRepository;
   routingDecisions: RoutingDecisionRepository;
   handovers: HandoverRepository;
+  qualityResults: QualityResultRepository;
   featureRunner: FeatureRunner;
   targets: TargetRegistry;
   capacity: CapacityMonitor;

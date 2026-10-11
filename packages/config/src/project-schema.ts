@@ -23,6 +23,14 @@ export const ProjectConfigSchema = z.object({
       requirePrApproval: z.boolean().default(true),
     })
     .default({}),
+  // M4.3/M4.5 — finding a partir desta severidade bloqueia a entrega e vira
+  // Task corretiva; acima de maxFixIterations rodadas de correção → needs_human.
+  review: z
+    .object({
+      blockingSeverity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
+      maxFixIterations: z.number().int().min(0).default(3),
+    })
+    .default({}),
   workspace: z
     .object({
       defaultMode: WorkspaceModeSchema.default("auto"),

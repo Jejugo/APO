@@ -38,6 +38,12 @@ export function registerLogsCommand(program: Command): void {
           if (!dataLine) continue;
           const json = dataLine.slice("data: ".length);
           if (block.startsWith("event: done")) {
+            const feature = await daemonRequest<{ status: string }>(`/features/${featureId}`);
+            if (feature.status === "awaiting_approval") {
+              console.log(
+                `\nFeature pronta. Deseja abrir o Pull Request?  apo approve ${featureId}  |  apo reject ${featureId} --reason "..."  (detalhes: apo feature report ${featureId})`,
+              );
+            }
             return;
           }
           printEvent(JSON.parse(json) as EventRow);

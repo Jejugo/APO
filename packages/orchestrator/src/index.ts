@@ -67,3 +67,21 @@ export { appendTasks } from "./append-tasks.js";
 
 export { checkFeatureOverlap, sharedPathsOf } from "./overlap.js";
 export type { ActiveFeatureFootprint, FeatureOverlapResult, OverlapCheckInput } from "./overlap.js";
+
+export { evaluateCompletion, isBlocking, SEVERITIES } from "./completion.js";
+export type {
+  CompletionInput,
+  CompletionVerdict,
+  RequirementCheck,
+  ReviewFinding,
+  Severity,
+} from "./completion.js";
+
+export { QUALITY_GATES, runQualityGates } from "./quality.js";
+export type { GateResult, QualityGate } from "./quality.js";
+
+export { GhPullRequestCreator, buildDeliverySummary } from "./delivery.js";
+export type { PullRequestCreator, PullRequestInput } from "./delivery.js";
+
+export { PLAN_CHANGE_REQUEST } from "./plan-changes.js";
+export type { ApprovalDecision } from "./feature-graph.js";

@@ -15,9 +15,11 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { GENERIC_ROLE_ID, type RoleDefinition, loadRoleRegistry } from "@apo/config";
 import type {
+  AgentMessageRepository,
   EventRepository,
   FeatureRepository,
   HandoverRepository,
+  QualityResultRepository,
   RoutingDecisionRepository,
   TaskAttemptRepository,
   TaskRepository,
@@ -33,8 +35,10 @@ import {
 } from "@apo/routing";
 import { z } from "zod";
 import { type AttemptControl, abortReasonOf } from "./attempt-control.js";
+import type { PullRequestCreator } from "./delivery.js";
 import { type TaskHandoverPayload, buildHandover } from "./handover.js";
 import { type TargetRegistry, candidatesOf, findTarget } from "./harness-registry.js";
+import { PLAN_CHANGE_REQUEST, PlanChangeRequestSchema } from "./plan-changes.js";
 import { buildWorkerPrompt } from "./prompt-builder.js";
 import { loadProjectConfig, prepareWorktree } from "./verify.js";
 import type { WorkerSlots } from "./worker-slots.js";
@@ -78,6 +82,14 @@ export interface EngineDeps {
   timeoutMs?: number;
   /** M2.3: sem saída e sem escrita em disco por esse tempo → `stalled` (retryable). */
   stallTimeoutMs?: number;
+  /** M4: gates, requisitos e review por iteração. */
+  qualityResults: QualityResultRepository;
+  /** M4.6: plan_change_request. */
+  agentMessages: AgentMessageRepository;
+  /** M4.9: ausente → `gh` (GhPullRequestCreator). */
+  pullRequests?: PullRequestCreator;
+  /** Timeout das chamadas de julgamento (Lead/Reviewer) dentro do graph. */
+  judgeTimeoutMs?: number;
 }
 
 export interface FeatureContext {
@@ -114,6 +126,8 @@ const RETRYABLE_FAILURES = new Set([
 const WorkerReportSchema = z.object({
   summary: z.string().optional(),
   artifacts: z.record(z.string(), z.unknown()).optional(),
+  // M4.6: pedidos de mudança de plano, decididos pelo Lead depois da onda.
+  planChangeRequests: z.array(PlanChangeRequestSchema).optional(),
 });
 
 function attemptStatusFor(failure: AgentFailure | undefined) {
@@ -321,6 +335,7 @@ export async function runTask(
 
     let result: Awaited<ReturnType<typeof entry.harness.execute>>;
     let signal: AbortSignal;
+    let attemptStartedAt = new Date();
     try {
       await deps.taskAttempts.create({
         id: attemptId,
@@ -356,6 +371,7 @@ export async function runTask(
       }
 
       signal = control?.newAttempt(taskId) ?? new AbortController().signal;
+      attemptStartedAt = new Date();
       deps.capacity.workerStarted(entry.harness.provider);
       try {
         result = await entry.harness.execute(
@@ -396,13 +412,22 @@ export async function runTask(
     });
 
     if (result.outcome === "success") {
-      deps.capacity.recordSuccess(entry.harness.provider);
+      deps.capacity.recordSuccess(entry.harness.provider, attemptStartedAt);
       const report = await readWorkerReport(resultPath);
       if (report) {
         await deps.tasks.update(taskId, {
           ...(report.artifacts !== undefined ? { artifacts: report.artifacts } : {}),
           summary: report.summary ?? null,
         });
+        for (const request of report.planChangeRequests ?? []) {
+          await deps.agentMessages.create({
+            id: randomUUID(),
+            featureId: feature.featureId,
+            fromTaskId: taskId,
+            type: PLAN_CHANGE_REQUEST,
+            payload: request,
+          });
+        }
       }
 
       if (task.kind === "write") {

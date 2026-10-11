@@ -45,4 +45,28 @@ export function registerControlCommands(program: Command): void {
         console.log(`Feature ${row.id} não tinha execução ativa (status atual: ${row.status}).`);
       }
     });
+
+  // M4.8 — aprovação do PR (seção 27 do PLAN.md). O merge continua manual.
+  program
+    .command("approve <featureId>")
+    .description("Aprova a Feature pronta: o APO abre o Pull Request (nunca faz merge)")
+    .action(async (featureId: string) => {
+      await daemonRequest(`/features/${featureId}/approve`, { method: "POST" });
+      console.log("Aprovada. O APO vai fazer push da branch e abrir o PR.");
+      console.log(`Acompanhe com: apo feature report ${featureId}  |  apo logs ${featureId} -f`);
+    });
+
+  program
+    .command("reject <featureId>")
+    .description("Rejeita a Feature pronta; o motivo vira uma Task de ajuste")
+    .requiredOption("--reason <texto>", "o que precisa mudar")
+    .action(async (featureId: string, options: { reason: string }) => {
+      await daemonRequest(`/features/${featureId}/reject`, {
+        method: "POST",
+        body: { reason: options.reason },
+      });
+      console.log(
+        "Rejeitada. O motivo virou uma Task de ajuste; a Feature volta para a fila de correção.",
+      );
+    });
 }

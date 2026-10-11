@@ -2,12 +2,14 @@ import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import type { Db } from "./connection.js";
 import {
   events,
+  agentMessages,
   type featureStatusEnum,
   features,
   handovers,
   projectAgents,
   projects,
   providerCapacity,
+  qualityResults,
   routingDecisions,
   type taskAttemptStatusEnum,
   taskAttempts,
@@ -66,7 +68,16 @@ export class FeatureRepository {
     return this.db.select().from(features).where(eq(features.projectId, projectId));
   }
 
-  update(id: string, changes: Partial<{ integrationBranch: string; plan: unknown }>) {
+  update(
+    id: string,
+    changes: Partial<{
+      integrationBranch: string;
+      plan: unknown;
+      fixIteration: number;
+      prUrl: string;
+      deliverySummary: string;
+    }>,
+  ) {
     return this.db
       .update(features)
       .set({ ...changes, updatedAt: new Date() })
@@ -318,6 +329,69 @@ export class HandoverRepository {
       .from(handovers)
       .where(eq(handovers.taskId, taskId))
       .orderBy(asc(handovers.createdAt));
+  }
+}
+
+export class QualityResultRepository {
+  constructor(private readonly db: Db) {}
+
+  create(row: typeof qualityResults.$inferInsert) {
+    return this.db
+      .insert(qualityResults)
+      .values(row)
+      .returning()
+      .then(([saved]) => saved);
+  }
+
+  listByFeature(featureId: string) {
+    return this.db
+      .select()
+      .from(qualityResults)
+      .where(eq(qualityResults.featureId, featureId))
+      .orderBy(asc(qualityResults.id));
+  }
+}
+
+export class AgentMessageRepository {
+  constructor(private readonly db: Db) {}
+
+  create(row: typeof agentMessages.$inferInsert) {
+    return this.db
+      .insert(agentMessages)
+      .values(row)
+      .returning()
+      .then(([saved]) => saved);
+  }
+
+  listPending(featureId: string, type: string) {
+    return this.db
+      .select()
+      .from(agentMessages)
+      .where(
+        and(
+          eq(agentMessages.featureId, featureId),
+          eq(agentMessages.type, type),
+          eq(agentMessages.status, "pending"),
+        ),
+      )
+      .orderBy(asc(agentMessages.createdAt));
+  }
+
+  listByFeature(featureId: string) {
+    return this.db
+      .select()
+      .from(agentMessages)
+      .where(eq(agentMessages.featureId, featureId))
+      .orderBy(asc(agentMessages.createdAt));
+  }
+
+  resolve(id: string, status: "accepted" | "rejected" | "escalated", resolution: unknown) {
+    return this.db
+      .update(agentMessages)
+      .set({ status, resolution, resolvedAt: new Date() })
+      .where(eq(agentMessages.id, id))
+      .returning()
+      .then(([row]) => row);
   }
 }
 

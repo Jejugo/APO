@@ -206,6 +206,19 @@ describe("CapacityMonitor", () => {
     expect(snapshot.recentFailures).toBe(1);
   });
 
+  it("sucesso de trabalho iniciado antes da quota acabar não limpa o exhausted", () => {
+    let now = new Date("2026-10-10T10:00:00Z");
+    const monitor = new CapacityMonitor({ now: () => now });
+    const startedBefore = new Date(now);
+    now = new Date("2026-10-10T10:05:00Z");
+    monitor.recordFailure("openai", { kind: "quota_exhausted", message: "limite" });
+    now = new Date("2026-10-10T10:06:00Z");
+    monitor.recordSuccess("openai", startedBefore);
+    expect(monitor.get("openai").availability).toBe("exhausted");
+    monitor.recordSuccess("openai", new Date("2026-10-10T10:05:30Z"));
+    expect(monitor.get("openai").availability).toBe("available");
+  });
+
   it("nunca inventa usagePercent", () => {
     const monitor = new CapacityMonitor();
     monitor.recordSuccess("anthropic");

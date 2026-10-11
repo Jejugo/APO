@@ -14,12 +14,14 @@ import {
   writePidFile,
 } from "@apo/config";
 import {
+  AgentMessageRepository,
   EventRepository,
   FeatureRepository,
   HandoverRepository,
   ProjectAgentRepository,
   ProjectRepository,
   ProviderCapacityRepository,
+  QualityResultRepository,
   RoutingDecisionRepository,
   TaskAttemptRepository,
   TaskRepository,
@@ -80,6 +82,8 @@ async function main(): Promise<void> {
   const routingDecisions = new RoutingDecisionRepository(db);
   const handovers = new HandoverRepository(db);
   const providerCapacity = new ProviderCapacityRepository(db);
+  const qualityResults = new QualityResultRepository(db);
+  const agentMessages = new AgentMessageRepository(db);
 
   const targets = buildTargetRegistry(providersConfig.targets, logger);
   if (targets.length === 0) {
@@ -106,6 +110,8 @@ async function main(): Promise<void> {
       targets,
       capacity,
       maxAttemptsPerTask: providersConfig.maxAttemptsPerTask,
+      qualityResults,
+      agentMessages,
       routingPolicy,
       // M3.0b: allowlist base + o que o Project autorizar em .apo/project.yaml.
       workerEnv: (repoPath) => {
@@ -132,7 +138,22 @@ async function main(): Promise<void> {
     logger.info({ interruptedCount }, "recovery: attempts 'working' marcados como 'interrupted'");
   }
   const resumeDeps = { features, projects, featureRunner, logger, worktreesRoot };
-  await resumeFeatures(resumeDeps, ["planning", "executing"], "recovery");
+  // awaiting_approval fica de fora: espera `apo approve|reject`, que retoma o
+  // interrupt pelo checkpoint (M4.8).
+  await resumeFeatures(
+    resumeDeps,
+    [
+      "planning",
+      "executing",
+      "integrating",
+      "validating",
+      "reviewing",
+      "fixing",
+      "rejected",
+      "delivering",
+    ],
+    "recovery",
+  );
 
   // M3.9 — Features em paused_capacity voltam quando algum provider volta.
   startCapacityResumer({ ...resumeDeps, capacity, targets });
@@ -147,6 +168,7 @@ async function main(): Promise<void> {
     events,
     routingDecisions,
     handovers,
+    qualityResults,
     featureRunner,
     targets,
     capacity,

@@ -53,6 +53,9 @@ importers:
       '@apo/routing':
         specifier: workspace:*
         version: link:../../packages/routing
+      '@langchain/langgraph':
+        specifier: ^1.4.21
+        version: 1.4.21(@langchain/core@1.2.17)(zod@3.25.76)
       '@langchain/langgraph-checkpoint-postgres':
         specifier: ^1.0.6
         version: 1.0.6(@langchain/core@1.2.17)(@langchain/langgraph-checkpoint@1.1.6(@langchain/core@1.2.17))

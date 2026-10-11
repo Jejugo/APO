@@ -42,3 +42,45 @@ describe("arquitetura: packages/orchestrator não conhece providers", () => {
     }
   });
 });
+
+// M4.4 — gate de saída: nenhum caminho leva a `awaiting_approval` sem passar
+// pelo completion contract. A única escrita desse status é a do node
+// prepare_delivery, logo depois de `evaluateCompletion(...)` dar `ready`.
+describe("arquitetura: awaiting_approval só via completion contract", () => {
+  const repoRoot = join(SRC_DIR, "..", "..", "..");
+  const sources = ["packages", "apps"].flatMap((group) =>
+    readdirSync(join(repoRoot, group), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(repoRoot, group, entry.name, "src"))
+      .filter((dir) => {
+        try {
+          return readdirSync(dir).length >= 0;
+        } catch {
+          return false;
+        }
+      })
+      .flatMap((dir) => listTsFiles(dir))
+      .filter((file) => !file.endsWith(".test.ts")),
+  );
+  const WRITE = /updateStatus\([^)]*["']awaiting_approval["']|status:\s*["']awaiting_approval["']/g;
+
+  it("há uma única escrita, no feature-graph, precedida do evaluateCompletion", () => {
+    const writes = sources.flatMap((file) => {
+      const matches = readFileSync(file, "utf8").match(WRITE) ?? [];
+      return matches.map(() => file);
+    });
+    expect(writes).toEqual([join(SRC_DIR, "feature-graph.ts")]);
+
+    const graph = readFileSync(join(SRC_DIR, "feature-graph.ts"), "utf8");
+    const node = graph.slice(
+      graph.indexOf('.addNode("prepare_delivery"'),
+      graph.indexOf('.addNode("await_approval"'),
+    );
+    const contractAt = node.indexOf("evaluateCompletion(");
+    const notReadyAt = node.indexOf("if (!verdict.ready)");
+    const writeAt = node.search(WRITE);
+    expect(contractAt).toBeGreaterThan(-1);
+    expect(notReadyAt).toBeGreaterThan(contractAt);
+    expect(writeAt).toBeGreaterThan(notReadyAt);
+  });
+});

@@ -7,16 +7,18 @@
 // M3: failover entre providers, paused_capacity, forced indisponível, reroute.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
+  AgentMessageRepository,
   type Db,
   EventRepository,
   FeatureRepository,
   HandoverRepository,
   ProjectRepository,
+  QualityResultRepository,
   RoutingDecisionRepository,
   TaskAttemptRepository,
   TaskRepository,
@@ -26,28 +28,63 @@ import type { ExecutionPreference, ProviderId } from "@apo/domain";
 import { type AgentExecutionInput, FakeHarness, type FakeHarnessStep } from "@apo/harnesses";
 import { createLogger } from "@apo/observability";
 import { CapacityMonitor } from "@apo/routing";
-import { MemorySaver } from "@langchain/langgraph";
+import { type BaseCheckpointSaver, Command, MemorySaver } from "@langchain/langgraph";
 import { execa } from "execa";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AttemptControl } from "./attempt-control.js";
-import { type FeatureGraphDeps, buildFeatureGraph } from "./feature-graph.js";
+import type { PullRequestCreator, PullRequestInput } from "./delivery.js";
+import {
+  type ApprovalDecision,
+  type FeatureGraphDeps,
+  buildFeatureGraph,
+} from "./feature-graph.js";
 import type { ExecutionTargetEntry } from "./harness-registry.js";
 import type { FeaturePlan } from "./plan.js";
 import { WORKER_CONTRACT } from "./prompt-builder.js";
 import { WorkerSlots } from "./worker-slots.js";
 
+type Responder = (input: AgentExecutionInput) => FakeHarnessStep | undefined;
+
+/** Lead e Reviewer aprovam tudo, a menos que o teste troque o `judge`. */
+const approvingJudge: Responder = (input) => {
+  if (input.prompt.includes("Verifique se a mudança")) {
+    return {
+      succeed: {
+        structuredOutput: { requirements: [{ requirement: "o objetivo", satisfied: true }] },
+      },
+    };
+  }
+  if (input.prompt.includes("Você é o Reviewer")) {
+    return { succeed: { structuredOutput: { findings: [] } } };
+  }
+  if (input.prompt.includes("pediu uma mudança no plano")) {
+    return { succeed: { structuredOutput: { decision: "reject", reason: "fora do escopo" } } };
+  }
+  return undefined;
+};
+
+/**
+ * Workers seguem o `script` (lista em ordem, ou escolha por input). Chamadas
+ * com saída estruturada (Lead/Reviewer, M4) vão para o `judge`, sem consumir
+ * passos do script.
+ */
 function fakeTarget(
   targetId: string,
   provider: ProviderId,
-  script: FakeHarnessStep[] | ((input: AgentExecutionInput) => FakeHarnessStep | undefined),
+  script: FakeHarnessStep[] | Responder,
+  judge: Responder = approvingJudge,
 ): ExecutionTargetEntry {
+  let cursor = 0;
+  const worker: Responder = Array.isArray(script)
+    ? () => script[cursor++] ?? { succeed: {} }
+    : script;
   return {
     candidate: { targetId, provider, harness: "fake" },
-    harness: new FakeHarness(
-      Array.isArray(script)
-        ? { label: targetId, provider, script }
-        : { label: targetId, provider, respond: script },
-    ),
+    harness: new FakeHarness({
+      label: targetId,
+      provider,
+      respond: (input) => (input.outputSchema ? judge(input) : worker(input)),
+    }),
   };
 }
 
@@ -74,6 +111,14 @@ function planOf(
   };
 }
 
+class FakePullRequests implements PullRequestCreator {
+  readonly created: PullRequestInput[] = [];
+  async create(input: PullRequestInput) {
+    this.created.push(input);
+    return { url: `https://example.test/pr/${this.created.length}` };
+  }
+}
+
 describe("ApoNativeEngine — integração com FakeHarness", () => {
   let db: Db;
   let repoPath: string;
@@ -86,6 +131,8 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     events: EventRepository;
     routingDecisions: RoutingDecisionRepository;
     handovers: HandoverRepository;
+    qualityResults: QualityResultRepository;
+    agentMessages: AgentMessageRepository;
   };
 
   beforeAll(() => {
@@ -98,6 +145,8 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
       events: new EventRepository(db),
       routingDecisions: new RoutingDecisionRepository(db),
       handovers: new HandoverRepository(db),
+      qualityResults: new QualityResultRepository(db),
+      agentMessages: new AgentMessageRepository(db),
     };
   });
 
@@ -146,6 +195,7 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     project = undefined as never;
 
     const capacity = options.capacity ?? new CapacityMonitor();
+    const prs = new FakePullRequests();
     const deps: FeatureGraphDeps = {
       logger: createLogger({}),
       features: repos.features,
@@ -157,6 +207,10 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
       targets: options.targets,
       capacity,
       maxAttemptsPerTask: 3,
+      qualityResults: repos.qualityResults,
+      agentMessages: repos.agentMessages,
+      pullRequests: prs,
+      judgeTimeoutMs: 10_000,
       attemptLogPath: (attemptId) => join(worktreesRoot, "logs", `${attemptId}.log`),
       runsRoot: join(worktreesRoot, "runs"),
       ...(options.slots ? { slots: options.slots } : {}),
@@ -170,17 +224,31 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
       worktreesRoot,
     };
     const integrationPath = join(worktreesRoot, feature.id, "integration");
-    return { feature, deps, input, capacity, integrationPath };
+    return { feature, deps, input, capacity, integrationPath, prs };
   }
 
+  /**
+   * Roda até um status terminal. Se parar em awaiting_approval (interrupt do
+   * M4.8), responde com `approvals` em ordem; acabou a lista → aprova.
+   */
   async function run(
     deps: FeatureGraphDeps,
     input: Awaited<ReturnType<typeof setup>>["input"],
     control?: AttemptControl,
+    options: { approvals?: ApprovalDecision[]; checkpointer?: BaseCheckpointSaver } = {},
   ) {
-    await buildFeatureGraph(deps, new MemorySaver()).invoke(input, {
+    const graph = buildFeatureGraph(deps, options.checkpointer ?? new MemorySaver());
+    const config = {
       configurable: { thread_id: input.featureId, ...(control ? { attemptControl: control } : {}) },
-    });
+    };
+    const approvals = [...(options.approvals ?? [])];
+    await graph.invoke(input, config);
+    for (let round = 0; round < 10; round++) {
+      const feature = await repos.features.getById(input.featureId);
+      if (feature?.status !== "awaiting_approval") return;
+      const decision: ApprovalDecision = approvals.shift() ?? { action: "approve" };
+      await graph.invoke(new Command({ resume: decision }), config);
+    }
   }
 
   async function finalState(featureId: string) {
@@ -584,5 +652,376 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     expect(attempts.map((attempt) => attempt.targetId)).toEqual(["fake-a", "fake-b"]);
     expect(tasks[0]?.executionPreference).toEqual({ mode: "forced", provider: "openai" });
     expect(existsSync(join(integrationPath, "b.txt"))).toBe(true);
+  });
+  // --- M4 ------------------------------------------------------------------
+
+  function projectYaml(content: string) {
+    mkdirSync(join(repoPath, ".apo"), { recursive: true });
+    writeFileSync(join(repoPath, ".apo", "project.yaml"), content);
+  }
+
+  /** Reviewer devolve `rounds[i]` na i-ésima chamada (depois, lista vazia). */
+  function reviewerRounds(
+    ...rounds: Array<Array<{ severity: string; description: string; file?: string }>>
+  ): Responder {
+    let call = 0;
+    return (input) => {
+      if (input.prompt.includes("Você é o Reviewer")) {
+        return { succeed: { structuredOutput: { findings: rounds[call++] ?? [] } } };
+      }
+      return approvingJudge(input);
+    };
+  }
+
+  it("M4: gates + requisitos + review aprovados → awaiting_approval → approve → PR criado e completed", async () => {
+    projectYaml("quality:\n  commands:\n    build: test -f a.txt\n    tests: test -f a.txt\n");
+    const { feature, deps, input, prs } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", [
+          { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+        ]),
+      ],
+    });
+    const graph = buildFeatureGraph(deps, new MemorySaver());
+    const config = { configurable: { thread_id: feature.id } };
+    await graph.invoke(input, config);
+
+    const waiting = await repos.features.getById(feature.id);
+    expect(waiting?.status).toBe("awaiting_approval");
+    expect(waiting?.deliverySummary).toContain("build: passed");
+    expect(prs.created).toHaveLength(0);
+
+    await graph.invoke(new Command({ resume: { action: "approve" } }), config);
+    const done = await repos.features.getById(feature.id);
+    expect(done?.status).toBe("completed");
+    expect(done?.prUrl).toBe("https://example.test/pr/1");
+    expect(prs.created[0]?.body).toContain("## Quality gates");
+    const gates = (await repos.qualityResults.listByFeature(feature.id)).map(
+      (row) => `${row.gate}:${row.status}`,
+    );
+    expect(gates).toEqual([
+      "build:passed",
+      "lint:skipped",
+      "typecheck:skipped",
+      "tests:passed",
+      "requirements:passed",
+      "review:passed",
+    ]);
+  });
+
+  it("M4.5: reviewer com 2 findings → 2 Tasks corretivas → corrigidas → gates de novo → entrega", async () => {
+    const { feature, deps, input, prs } = await setup({
+      targets: [
+        fakeTarget(
+          "fake-a",
+          "anthropic",
+          (attemptInput) => {
+            if (attemptInput.prompt.includes("Task: Review (high): falta validar")) {
+              return { writeFile: { path: "validacao.txt", content: "ok" } };
+            }
+            if (attemptInput.prompt.includes("Task: Review (medium): falta teste")) {
+              return { writeFile: { path: "teste.txt", content: "ok" } };
+            }
+            return { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" };
+          },
+          reviewerRounds(
+            [
+              { severity: "high", description: "falta validar a entrada", file: "a.txt" },
+              { severity: "medium", description: "falta teste do caso vazio" },
+              { severity: "low", description: "nome poderia ser melhor" },
+            ],
+            [],
+          ),
+        ),
+      ],
+    });
+    await run(deps, input);
+
+    const { feature: done, tasks } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    expect(done?.fixIteration).toBe(1);
+    const corrective = tasks.filter((task) => task.origin === "review_fix");
+    expect(corrective).toHaveLength(2); // o finding low não bloqueia
+    expect(corrective.every((task) => task.status === "completed")).toBe(true);
+    const iterations = (await repos.qualityResults.listByFeature(feature.id))
+      .filter((row) => row.gate === "review")
+      .map((row) => row.iteration);
+    expect(iterations).toEqual([0, 1]);
+    expect(prs.created[0]?.body).toContain("Rodadas de correção: 1");
+  });
+
+  it("M4.1/M4.5: gate falhando vira Task corretiva com a saída do comando", async () => {
+    projectYaml(
+      "quality:\n  commands:\n    tests: test -f ok.txt || (echo 'FALTA ok.txt' && exit 1)\n",
+    );
+    const harness = fakeTarget("fake-a", "anthropic", (attemptInput) =>
+      attemptInput.prompt.includes("Task: Corrigir o gate tests")
+        ? { writeFile: { path: "ok.txt", content: "ok" } }
+        : { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+    );
+    const { feature, deps, input } = await setup({ targets: [harness] });
+    await run(deps, input);
+
+    const { feature: done, tasks } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    const fix = tasks.find((task) => task.origin === "quality_fix");
+    expect(fix?.description).toContain("FALTA ok.txt");
+    const tests = (await repos.qualityResults.listByFeature(feature.id))
+      .filter((row) => row.gate === "tests")
+      .map((row) => row.status);
+    expect(tests).toEqual(["failed", "passed"]);
+  });
+
+  it("M4.5: maxFixIterations estourado → needs_human, sem entregar", async () => {
+    projectYaml("review:\n  maxFixIterations: 1\n");
+    const always: Responder = (input) =>
+      input.prompt.includes("Você é o Reviewer")
+        ? {
+            succeed: {
+              structuredOutput: {
+                findings: [{ severity: "critical", description: "sempre quebrado" }],
+              },
+            },
+          }
+        : approvingJudge(input);
+    const { feature, deps, input, prs } = await setup({
+      targets: [
+        fakeTarget(
+          "fake-a",
+          "anthropic",
+          (attemptInput) =>
+            attemptInput.prompt.includes("Task: Review")
+              ? { writeFile: { path: `fix-${randomUUID()}.txt`, content: "x" } }
+              : { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+          always,
+        ),
+      ],
+    });
+    await run(deps, input);
+
+    const { feature: done } = await finalState(feature.id);
+    expect(done?.status).toBe("needs_human");
+    expect(done?.fixIteration).toBe(1);
+    expect(prs.created).toHaveLength(0);
+  });
+
+  it("M4.8: aprovação sobrevive a um 'restart' (graph novo sobre o mesmo checkpoint)", async () => {
+    const { feature, deps, input, prs } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", [
+          { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+        ]),
+      ],
+    });
+    const checkpointer = new MemorySaver();
+    const config = { configurable: { thread_id: feature.id } };
+    await buildFeatureGraph(deps, checkpointer).invoke(input, config);
+    expect((await repos.features.getById(feature.id))?.status).toBe("awaiting_approval");
+
+    // Daemon novo: nada em memória além do checkpoint.
+    await buildFeatureGraph(deps, checkpointer).invoke(
+      new Command({ resume: { action: "approve" } }),
+      config,
+    );
+    expect((await repos.features.getById(feature.id))?.status).toBe("completed");
+    expect(prs.created).toHaveLength(1);
+  });
+
+  it("M4.9: falha ao abrir o PR (sem remote) → needs_human com o motivo, nada de status preso", async () => {
+    const { feature, deps, input } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", [
+          { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+        ]),
+      ],
+    });
+    deps.pullRequests = {
+      create: async () => {
+        throw new Error("FAKE-PR: fatal: 'origin' does not appear to be a git repository");
+      },
+    };
+    await run(deps, input);
+
+    const done = await repos.features.getById(feature.id);
+    expect(done?.status).toBe("needs_human");
+    expect(done?.prUrl).toBeNull();
+    const events = await repos.events.listByFeature(feature.id);
+    const reason = events.find((event) => event.type === "feature.needs_human")?.payload as {
+      reason: string;
+    };
+    expect(reason.reason).toContain("origin");
+  }, 30_000);
+
+  it("M4.8: reject com motivo → Task de ajuste → nova revisão → aprovado", async () => {
+    const { feature, deps, input, prs } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", (attemptInput) =>
+          attemptInput.prompt.includes("Task: Ajustar conforme a revisão humana")
+            ? { writeFile: { path: "titulo.txt", content: "novo" } }
+            : { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+        ),
+      ],
+    });
+    await run(deps, input, undefined, {
+      approvals: [{ action: "reject", reason: "troque o título" }],
+    });
+
+    const { feature: done, tasks } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    const fix = tasks.find((task) => task.origin === "human_fix");
+    expect(fix?.description).toContain("troque o título");
+    expect(prs.created).toHaveLength(1);
+    const events = (await repos.events.listByFeature(feature.id)).map((event) => event.type);
+    expect(events).toContain("feature.rejected");
+    // O motivo do reject entra na verificação de requisitos da rodada seguinte.
+    const harness = deps.targets[0]?.harness as FakeHarness;
+    const checks = harness.receivedPrompts.filter((prompt) =>
+      prompt.includes("Verifique se a mudança"),
+    );
+    expect(checks.at(-1)).toContain("(pedido na revisão humana) troque o título");
+  });
+
+  it("M4.6: planChangeRequest aceito pelo Lead vira Task nova (origin plan_change)", async () => {
+    const lead: Responder = (input) =>
+      input.prompt.includes("pediu uma mudança no plano")
+        ? {
+            succeed: {
+              structuredOutput: {
+                decision: "create_task",
+                reason: "necessário para o objetivo",
+                task: {
+                  title: "migrar o banco",
+                  description: "criar a migration",
+                  kind: "write",
+                  role: "generic",
+                  expectedPaths: [],
+                },
+              },
+            },
+          }
+        : approvingJudge(input);
+    const { feature, deps, input } = await setup({
+      targets: [
+        fakeTarget(
+          "fake-a",
+          "anthropic",
+          (attemptInput) =>
+            attemptInput.prompt.includes("Task: migrar o banco")
+              ? { writeFile: { path: "migration.sql", content: "--" }, commit: "feat: migration" }
+              : {
+                  writeFile: { path: "a.txt", content: "x" },
+                  commit: "feat: a",
+                  report: {
+                    summary: "feito",
+                    planChangeRequests: [
+                      {
+                        title: "migration",
+                        description: "falta a migration",
+                        reason: "a tabela não existe",
+                      },
+                    ],
+                  },
+                },
+          lead,
+        ),
+      ],
+    });
+    await run(deps, input);
+
+    const { feature: done, tasks } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    expect(tasks.find((task) => task.origin === "plan_change")?.status).toBe("completed");
+    const messages = await repos.agentMessages.listByFeature(feature.id);
+    expect(messages.map((message) => message.status)).toEqual(["accepted"]);
+  });
+
+  it("E2E seção 38 (FakeHarness): 3 Tasks paralelas, quota no meio, failover, reviewer com 2 problemas, correção, aprovação, PR", async () => {
+    projectYaml(
+      "quality:\n  commands:\n    build: test -f produtos.txt\n    lint: 'true'\n    typecheck: 'true'\n    tests: test -f api.txt\n",
+    );
+    let quotaHit = false;
+    const work = (attemptInput: AgentExecutionInput): FakeHarnessStep => {
+      if (attemptInput.prompt.includes("Task: API de produtos")) {
+        return {
+          delayMs: 200,
+          writeFile: { path: "api.txt", content: "api" },
+          commit: "feat: api",
+        };
+      }
+      if (attemptInput.prompt.includes("Task: página de produtos")) {
+        return {
+          delayMs: 200,
+          writeFile: { path: "produtos.txt", content: "ui" },
+          commit: "feat: página",
+        };
+      }
+      if (attemptInput.prompt.includes("Task: testes")) {
+        return {
+          delayMs: 200,
+          writeFile: { path: "testes.txt", content: "t" },
+          commit: "test: produtos",
+        };
+      }
+      if (attemptInput.prompt.includes("Task: Review")) {
+        return { writeFile: { path: `fix-${randomUUID().slice(0, 6)}.txt`, content: "fix" } };
+      }
+      return { succeed: {} };
+    };
+    const reviewer = reviewerRounds(
+      [
+        { severity: "high", description: "preço sem formatação", file: "produtos.txt" },
+        { severity: "medium", description: "API sem paginação", file: "api.txt" },
+      ],
+      [],
+    );
+    const { feature, deps, input, capacity, prs } = await setup({
+      targets: [
+        fakeTarget(
+          "fake-quota",
+          "openai",
+          (attemptInput) => {
+            // O primeiro provider bate quota no meio da Task da página.
+            if (attemptInput.prompt.includes("Task: página de produtos") && !quotaHit) {
+              quotaHit = true;
+              return {
+                delayMs: 100,
+                writeFile: { path: "produtos.txt", content: "meio" },
+                commit: "wip",
+                fail: { kind: "quota_exhausted" },
+              };
+            }
+            return work(attemptInput);
+          },
+          reviewer,
+        ),
+        fakeTarget("fake-backup", "anthropic", work, reviewer),
+      ],
+      featurePreference: { mode: "preferred", provider: "openai" },
+      plan: planOf(
+        { key: "t1", title: "API de produtos", role: "backend-developer" },
+        { key: "t2", title: "página de produtos", role: "frontend-developer" },
+        { key: "t3", title: "testes", role: "qa-engineer" },
+      ),
+    });
+    await run(deps, input);
+
+    const { feature: done, tasks, attempts } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    expect(done?.prUrl).toBeTruthy();
+    // Quota no meio → handover → outro provider.
+    const pageTask = tasks.find((task) => task.title === "página de produtos");
+    const pageAttempts = attempts.filter((attempt) => attempt.taskId === pageTask?.id);
+    expect(pageAttempts.map((attempt) => [attempt.targetId, attempt.status])).toEqual([
+      ["fake-quota", "failed"],
+      ["fake-backup", "completed"],
+    ]);
+    expect(pageAttempts[1]?.handoverId).toBeTruthy();
+    expect(capacity.get("openai").availability).toBe("exhausted");
+    // Reviewer com 2 problemas → 2 corretivas → gates de novo.
+    expect(tasks.filter((task) => task.origin === "review_fix")).toHaveLength(2);
+    const rows = await repos.qualityResults.listByFeature(feature.id);
+    expect(rows.filter((row) => row.gate === "build").map((row) => row.iteration)).toEqual([0, 1]);
+    expect(rows.every((row) => row.status !== "failed")).toBe(true);
+    expect(prs.created).toHaveLength(1);
   });
 });

@@ -8,7 +8,9 @@
 // - crash/timeout/stalled → não muda disponibilidade (problema da Task, não do
 //   provider), só conta como falha recente para desempate
 // - após o resetAt   → volta a `unknown`
-// - sucesso          → `available`
+// - sucesso          → `available`, mas só de trabalho que começou depois da
+//   última mudança de estado: um attempt que já estava rodando quando a quota
+//   acabou pode terminar bem e não prova que ela voltou (achado do E2E do M4).
 //
 // Quando o provider não informa quando volta, usamos um resetAt **estimado**
 // (`unknownResetRetryMs`) só para não deixar o provider bloqueado para sempre;
@@ -120,9 +122,14 @@ export class CapacityMonitor {
     void this.options.sink?.onChange(this.toSnapshot(provider, state));
   }
 
-  recordSuccess(provider: ProviderId): void {
+  /** `startedAt`: início do trabalho que deu certo (ausente = agora). */
+  recordSuccess(provider: ProviderId, startedAt?: Date): void {
     const state = this.state(provider);
     if (state.availability === "available") {
+      return;
+    }
+    const limited = state.availability === "degraded" || state.availability === "exhausted";
+    if (limited && startedAt && startedAt.getTime() <= state.capturedAt.getTime()) {
       return;
     }
     state.availability = "available";
