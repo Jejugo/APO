@@ -22,8 +22,8 @@ echo "==> Node ${NODE_VERSION} isolado em ${NODE_DIR}"
 if [[ "$("${NODE_DIR}/bin/node" --version 2>/dev/null || true)" != "${NODE_VERSION}" ]]; then
   tmp="$(mktemp -d)"
   tarball="node-${NODE_VERSION}-linux-x64.tar.xz"
-  curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/${tarball}" -o "${tmp}/${tarball}"
-  curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt" -o "${tmp}/SHASUMS256.txt"
+  curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors "https://nodejs.org/dist/${NODE_VERSION}/${tarball}" -o "${tmp}/${tarball}"
+  curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors "https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt" -o "${tmp}/SHASUMS256.txt"
   (cd "${tmp}" && grep " ${tarball}\$" SHASUMS256.txt | sha256sum -c -)
   rm -rf "${NODE_DIR}" && mkdir -p "${NODE_DIR}"
   tar -xJf "${tmp}/${tarball}" -C "${NODE_DIR}" --strip-components=1

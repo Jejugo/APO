@@ -1006,9 +1006,16 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 #### Gate de saída
 
-- [ ] Reiniciar a VM no meio de uma Feature e, após o boot, a Feature retoma sozinha.
-- [ ] Uma Feature completa é criada, ajustada e aprovada só pelo `apo chat`.
-- [ ] O usuário `apo` não consegue ler `/home/jeff` nem usar sudo.
+- [ ] Reiniciar a VM no meio de uma Feature e, após o boot, a Feature retoma sozinha. — **pendente**: depende dos logins dos CLIs no usuário `apo` (feitos pelo usuário) e de autorização para reiniciar a VM, que roda outros serviços.
+- [x] Uma Feature completa é criada, ajustada e aprovada só pelo `apo chat` — E2E real: `isPalindrome` criada pelo chat, requisito alterado com a Feature rodando (replan segurou e cancelou a Task não iniciada e criou as novas), review no Codex achou um bug real (contagem UTF-16), correção, aprovação pelo chat → PR #3.
+- [x] O usuário `apo` não consegue ler `/home/jeff` nem usar sudo — verificado na VM: `Permission denied` em `/home/jeff`, sudo negado, sem acesso ao socket do Docker; dentro do sandbox do serviço, `/home` só mostra `apo` e o sistema é somente leitura (`systemd-analyze security`: 5.8).
+
+**Achados:**
+- **Janela do replan:** cancelar antes de o Lead planejar (~20 s) deixava o graph concluir sem o trabalho replanejado. Agora o replan segura as Tasks (`pending`), o graph espera dentro do node, e só depois de anexar as novas as seguradas são canceladas. Transições runner × replan são atômicas (`transitionIf`).
+- **Correções em paralelo** sobre os mesmos arquivos geravam uma cascata de conflitos. As Tasks corretivas de uma rodada agora rodam em sequência.
+- **`recursionLimit`:** o padrão do LangGraph (25 passos) estouraria numa Feature com muitas ondas; agora 1000.
+- **VM:** Node do sistema é 22; o APO usa Node 24 isolado em `/opt/node24`. CPU da VM precisava ser `host` no Proxmox (AVX/PCLMUL para `agy` e embeddings). DNS da VM oscilou durante o `apt` — downloads do instalador com retry.
+- M6.10 (mensageria ao vivo) não construído: condicional e nenhum uso real pediu.
 
 ---
 
