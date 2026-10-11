@@ -26,6 +26,7 @@ export interface SupervisedProcessInput {
   stallTimeoutMs?: number;
   /** Diretórios além do `cwd` cuja escrita conta como atividade. */
   activityPaths?: string[];
+  onSpawn?: (pid: number) => void;
 }
 
 export interface SupervisedProcessResult {
@@ -93,6 +94,7 @@ export async function runSupervisedProcess(
     killDescendants: true,
     reject: false,
   });
+  if (subprocess.pid !== undefined) input.onSpawn?.(subprocess.pid);
   subprocess.stdout?.on("data", watch.touch);
   subprocess.stderr?.on("data", watch.touch);
 

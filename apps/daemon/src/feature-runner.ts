@@ -9,6 +9,7 @@ import type { ExecutionPreference } from "@apo/domain";
 import {
   type ApprovalDecision,
   AttemptControl,
+  FEATURE_GRAPH_RECURSION_LIMIT,
   type FeatureGraph,
   type FeatureGraphDeps,
   type FeatureGraphInput,
@@ -63,6 +64,7 @@ export class FeatureRunner {
     this.controls.set(featureId, control);
     try {
       await this.graph.invoke(input, {
+        recursionLimit: FEATURE_GRAPH_RECURSION_LIMIT,
         configurable: { thread_id: featureId, attemptControl: control },
       });
     } finally {

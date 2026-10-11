@@ -50,6 +50,8 @@ export interface AgentExecutionInput {
   /** Diretórios fora do `cwd` onde o worker pode escrever (ex.: o diretório do
    * `$APO_RESULT_PATH`, que fica fora do repo — seção 6.3). Vira `--add-dir`. */
   extraWritableDirs?: string[];
+  /** M6.8: chamado com o PID do CLI assim que ele sobe (para limpar órfãos no boot). */
+  onSpawn?: (pid: number) => void;
 }
 
 export interface ResumeExecutionInput extends AgentExecutionInput {

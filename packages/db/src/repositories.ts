@@ -1,8 +1,10 @@
-import { and, asc, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
 import type { Db } from "./connection.js";
 import {
   events,
   agentMessages,
+  conversationMessages,
+  conversationThreads,
   type featureStatusEnum,
   features,
   handovers,
@@ -179,6 +181,19 @@ export class TaskRepository {
       .update(tasks)
       .set({ status, updatedAt: new Date() })
       .where(eq(tasks.id, id))
+      .returning()
+      .then(([row]) => row);
+  }
+
+  /**
+   * Troca de status só se o atual estiver em `from` — atômico no banco.
+   * Usado onde dois atores disputam a mesma Task (runner × replan, M6.4).
+   */
+  transitionIf(id: string, from: TaskStatus[], to: TaskStatus) {
+    return this.db
+      .update(tasks)
+      .set({ status: to, updatedAt: new Date() })
+      .where(and(eq(tasks.id, id), inArray(tasks.status, from)))
       .returning()
       .then(([row]) => row);
   }
@@ -392,6 +407,72 @@ export class AgentMessageRepository {
       .where(eq(agentMessages.id, id))
       .returning()
       .then(([row]) => row);
+  }
+}
+
+export class ConversationRepository {
+  constructor(private readonly db: Db) {}
+
+  /** A thread do Project (M6.1: uma por Project); cria se não existir. */
+  async threadFor(projectId: string, newId: string) {
+    const [existing] = await this.db
+      .select()
+      .from(conversationThreads)
+      .where(eq(conversationThreads.projectId, projectId))
+      .orderBy(asc(conversationThreads.createdAt))
+      .limit(1);
+    if (existing) return existing;
+    const [created] = await this.db
+      .insert(conversationThreads)
+      .values({ id: newId, projectId })
+      .returning();
+    return created as typeof conversationThreads.$inferSelect;
+  }
+
+  addMessage(row: typeof conversationMessages.$inferInsert) {
+    return this.db
+      .insert(conversationMessages)
+      .values(row)
+      .returning()
+      .then(([saved]) => saved);
+  }
+
+  setResult(messageId: string, result: unknown) {
+    return this.db
+      .update(conversationMessages)
+      .set({ result })
+      .where(eq(conversationMessages.id, messageId));
+  }
+
+  /** Mensagens ainda não resumidas, mais antigas primeiro. */
+  async unsummarized(threadId: string, summarizedUntil: Date | null) {
+    return this.db
+      .select()
+      .from(conversationMessages)
+      .where(
+        and(
+          eq(conversationMessages.threadId, threadId),
+          ...(summarizedUntil ? [gt(conversationMessages.createdAt, summarizedUntil)] : []),
+        ),
+      )
+      .orderBy(asc(conversationMessages.createdAt));
+  }
+
+  recent(threadId: string, limit: number) {
+    return this.db
+      .select()
+      .from(conversationMessages)
+      .where(eq(conversationMessages.threadId, threadId))
+      .orderBy(desc(conversationMessages.createdAt))
+      .limit(limit)
+      .then((rows) => rows.reverse());
+  }
+
+  updateSummary(threadId: string, summary: string, summarizedUntil: Date) {
+    return this.db
+      .update(conversationThreads)
+      .set({ summary, summarizedUntil, updatedAt: new Date() })
+      .where(eq(conversationThreads.id, threadId));
   }
 }
 

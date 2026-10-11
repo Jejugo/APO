@@ -1,0 +1,14 @@
+# ~/.apo/config.yaml do usuário apo na VM (copiado pelo install.sh só se não existir).
+socketPath: ~/.apo/apo.sock
+limits:
+  # 4 vCPUs: worktrees rodam install/build/test; 2 workers em paralelo com folga.
+  maxGlobalWorkers: 2
+  maxWorkersPerProvider: 2
+  stallTimeoutMinutes: 10
+remote:
+  # IP do Tailscale da VM (ubuntu-lab). Token em ~/.apo/secrets.env (APO_REMOTE_TOKEN).
+  listen: "${TAILSCALE_IP}:7400"
+jev:
+  enabled: true
+memory:
+  enabled: true

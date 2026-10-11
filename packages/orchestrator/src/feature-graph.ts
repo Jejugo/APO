@@ -105,6 +105,14 @@ export type FeatureGraphDeps = EngineDeps;
 const TERMINAL_TASK = new Set(["completed", "failed", "cancelled", "needs_human"]);
 
 const DEFAULT_JUDGE_TIMEOUT_MS = 15 * 60_000;
+const HELD_POLL_MS = 500;
+const HELD_TIMEOUT_MS = 20 * 60_000;
+
+/**
+ * Teto de passos por invocação. O padrão do LangGraph (25) estoura numa
+ * Feature real: cada onda gasta 2 passos e as correções rodam em sequência.
+ */
+export const FEATURE_GRAPH_RECURSION_LIMIT = 1_000;
 
 /** Resposta de `apo approve` / `apo reject` / cancel, via Command({ resume }). */
 export interface ApprovalDecision {
@@ -193,6 +201,9 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
         failureReason: `limite de ${maxFixIterations} rodadas de correção atingido: ${reason}`,
       };
     }
+    // Em sequência, não em paralelo (achado do E2E real do M6): as correções de
+    // uma rodada costumam mexer nos mesmos arquivos, e em paralelo geravam uma
+    // cascata de conflitos de merge. Cada uma nasce da integração com a anterior.
     const plan: FeaturePlan = {
       tasks: items.map((item, index) => ({
         key: `f${index}`,
@@ -201,7 +212,7 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
         kind: "write",
         role: GENERIC_ROLE_ID,
         expectedPaths: item.expectedPaths,
-        dependsOn: [],
+        dependsOn: index === 0 ? [] : [`f${index - 1}`],
       })),
     };
     const ids = await appendTasks(deps.tasks, state.featureId, plan, origin);
@@ -227,6 +238,9 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
       const payload = (event.payload ?? {}) as Record<string, unknown>;
       if (event.type === "feature.rejected" && typeof payload.reason === "string") {
         additions.push(`(pedido na revisão humana) ${payload.reason}`);
+      }
+      if (event.type === "feature.requirement_updated" && typeof payload.change === "string") {
+        additions.push(`(requisito alterado) ${payload.change}`);
       }
       if (
         event.type === "feature.request_absorbed" &&
@@ -306,29 +320,60 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
         return { outcome: "cancelled" as const, failureReason: "Feature cancelada" };
       }
 
-      const tasks = await deps.tasks.listByFeature(state.featureId);
-      const byId = new Map(tasks.map((task) => [task.id, task]));
-      const stuck = tasks.find((task) => task.status === "failed" || task.status === "needs_human");
-      if (stuck) {
-        return {
-          outcome: stuck.status === "failed" ? ("failure" as const) : ("needs_human" as const),
-          failureReason: `Task "${stuck.title}" está ${stuck.status}`,
-        };
+      // M6.4: Tasks `pending` estão seguradas por um replan em andamento. Se só
+      // restam elas, espera o plano novo aqui dentro (sem gastar passos do
+      // graph) em vez de concluir a Feature sem o trabalho replanejado.
+      const waitStarted = Date.now();
+      let tasks = await deps.tasks.listByFeature(state.featureId);
+      let byId = new Map(tasks.map((task) => [task.id, task]));
+      let ready: typeof tasks = [];
+      for (;;) {
+        tasks = await deps.tasks.listByFeature(state.featureId);
+        byId = new Map(tasks.map((task) => [task.id, task]));
+        const stuck = tasks.find(
+          (task) => task.status === "failed" || task.status === "needs_human",
+        );
+        if (stuck) {
+          return {
+            outcome: stuck.status === "failed" ? ("failure" as const) : ("needs_human" as const),
+            failureReason: `Task "${stuck.title}" está ${stuck.status}`,
+          };
+        }
+        // Corretivas de conflito vêm antes de tudo: a integração precisa estar
+        // limpa para as próximas Tasks nascerem dela.
+        const pendingConflicts = tasks.filter(
+          (task) => task.origin === "conflict" && !TERMINAL_TASK.has(task.status),
+        );
+        ready = (pendingConflicts.length > 0 ? pendingConflicts : tasks).filter(
+          (task) =>
+            !TERMINAL_TASK.has(task.status) &&
+            task.status !== "pending" &&
+            task.dependencies.every((depId) => byId.get(depId)?.status === "completed"),
+        );
+        const held = tasks.filter((task) => task.status === "pending");
+        if (ready.length > 0 || held.length === 0) break;
+        if (control?.isCancelled()) {
+          return { outcome: "cancelled" as const, failureReason: "Feature cancelada" };
+        }
+        if (Date.now() - waitStarted > HELD_TIMEOUT_MS) {
+          // Replan que nunca terminou (ex.: daemon caiu no meio): solta as Tasks.
+          for (const task of held) await deps.tasks.transitionIf(task.id, ["pending"], "ready");
+          await emitEvent(deps.events, deps.logger, {
+            type: "replan.hold_released",
+            projectId: state.projectId,
+            featureId: state.featureId,
+            payload: { tasks: held.map((task) => task.id) },
+          });
+          continue;
+        }
+        await new Promise((resolve) => setTimeout(resolve, HELD_POLL_MS));
       }
 
-      // Corretivas de conflito vêm antes de tudo: a integração precisa estar
-      // limpa para as próximas Tasks nascerem dela.
-      const pendingConflicts = tasks.filter(
-        (task) => task.origin === "conflict" && !TERMINAL_TASK.has(task.status),
-      );
-      const ready = (pendingConflicts.length > 0 ? pendingConflicts : tasks).filter(
-        (task) =>
-          !TERMINAL_TASK.has(task.status) &&
-          task.dependencies.every((depId) => byId.get(depId)?.status === "completed"),
-      );
-
       if (ready.length === 0) {
-        const unfinished = tasks.filter((task) => task.status !== "completed");
+        // Cancelada pelo replan (M6.4) conta como resolvida.
+        const unfinished = tasks.filter(
+          (task) => task.status !== "completed" && task.status !== "cancelled",
+        );
         return unfinished.length === 0
           ? { outcome: "integrated" as const }
           : {
@@ -483,7 +528,7 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
     .addNode("quality", async (state) => {
       // Tasks podem ter sido anexadas depois da última onda (absorção, M2.13).
       const tasks = await deps.tasks.listByFeature(state.featureId);
-      if (tasks.some((task) => task.status !== "completed")) {
+      if (tasks.some((task) => task.status !== "completed" && task.status !== "cancelled")) {
         return { outcome: "continue" as const };
       }
       const integrationPath = integrationWorktreePath(state.worktreesRoot, state.featureId);

@@ -80,6 +80,20 @@ export const MemoryConfigSchema = z.object({
   maxChars: z.number().int().positive().default(6000),
 });
 
+// M6.7 — acesso remoto (ex.: pelo IP do Tailscale). Desligado sem `listen`.
+// O token vem do ambiente/`~/.apo/secrets.env`, nunca do config.yaml.
+export const RemoteConfigSchema = z.object({
+  /** "host:porta", ex.: "100.123.161.90:7400". Nunca 0.0.0.0. */
+  listen: z
+    .string()
+    .regex(/^[^\s:]+:\d+$/)
+    .refine((value) => !value.startsWith("0.0.0.0") && !value.startsWith("::"), {
+      message: "escute num IP específico (Tailscale), nunca em todas as interfaces",
+    })
+    .optional(),
+  tokenEnv: z.string().default("APO_REMOTE_TOKEN"),
+});
+
 export const GlobalConfigSchema = z.object({
   socketPath: z.string().default("~/.apo/apo.sock"),
   routing: RoutingConfigSchema.default({}),
@@ -87,6 +101,7 @@ export const GlobalConfigSchema = z.object({
   providers: ProvidersConfigSchema.default({}),
   jev: JevConfigSchema.default({}),
   memory: MemoryConfigSchema.default({}),
+  remote: RemoteConfigSchema.default({}),
 });
 
 export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;

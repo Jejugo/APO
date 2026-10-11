@@ -65,6 +65,7 @@ async function run(
     signal,
     logPath: input.logPath,
     ...(input.stallTimeoutMs ? { stallTimeoutMs: input.stallTimeoutMs } : {}),
+    ...(input.onSpawn ? { onSpawn: input.onSpawn } : {}),
   });
   const durationMs = Date.now() - startedAt;
 

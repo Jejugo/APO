@@ -53,6 +53,7 @@ async function run(
     signal,
     logPath: input.logPath,
     ...(input.stallTimeoutMs ? { stallTimeoutMs: input.stallTimeoutMs } : {}),
+    ...(input.onSpawn ? { onSpawn: input.onSpawn } : {}),
     // Em `--output-format json` o stdout fica mudo até o fim; o transcript da
     // sessão em ~/.claude/projects é o sinal de vida.
     activityPaths: env.HOME ? [join(env.HOME, ".claude", "projects")] : [],

@@ -20,3 +20,47 @@ describe("GET /health", () => {
     await app.close();
   });
 });
+
+describe("listener remoto com token (M6.7)", () => {
+  const token = "t".repeat(32);
+
+  it("sem token, com token errado ou de tamanho diferente → 401", async () => {
+    const app = buildServer(stubDeps, { authToken: token });
+    for (const authorization of [undefined, `Bearer ${"x".repeat(32)}`, "Bearer curto"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: "/health",
+        ...(authorization ? { headers: { authorization } } : {}),
+      });
+      expect(response.statusCode).toBe(401);
+    }
+    await app.close();
+  });
+
+  it("token certo passa", async () => {
+    const app = buildServer(stubDeps, { authToken: token });
+    const response = await app.inject({
+      method: "GET",
+      url: "/health",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(200);
+    await app.close();
+  });
+});
+
+describe("GET /health com detalhes (M6.9)", () => {
+  it("Postgres fora → 503 degraded, com os providers", async () => {
+    const app = buildServer({
+      ...stubDeps,
+      health: async () => ({
+        postgres: "connect ECONNREFUSED",
+        providers: [{ target: "a", availability: "available" }],
+      }),
+    } as ServerDeps);
+    const response = await app.inject({ method: "GET", url: "/health" });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ status: "degraded", providers: [{ target: "a" }] });
+    await app.close();
+  });
+});

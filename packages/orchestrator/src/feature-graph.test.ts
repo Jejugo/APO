@@ -31,16 +31,19 @@ import { CapacityMonitor } from "@apo/routing";
 import { type BaseCheckpointSaver, Command, MemorySaver } from "@langchain/langgraph";
 import { execa } from "execa";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { AgentRunnerImpl } from "./agent-runner.js";
 import { AttemptControl } from "./attempt-control.js";
 import type { PullRequestCreator, PullRequestInput } from "./delivery.js";
 import {
   type ApprovalDecision,
+  FEATURE_GRAPH_RECURSION_LIMIT,
   type FeatureGraphDeps,
   buildFeatureGraph,
 } from "./feature-graph.js";
 import type { ExecutionTargetEntry } from "./harness-registry.js";
 import type { FeaturePlan } from "./plan.js";
 import { WORKER_CONTRACT } from "./prompt-builder.js";
+import { replanFeature } from "./replan.js";
 import { WorkerSlots } from "./worker-slots.js";
 
 type Responder = (input: AgentExecutionInput) => FakeHarnessStep | undefined;
@@ -106,7 +109,14 @@ function fakeTarget(
 /** Escolhe o passo pela Task (o prompt traz "Task: <título>"). */
 function byTitle(steps: Record<string, FakeHarnessStep>) {
   return (input: AgentExecutionInput) => {
-    const title = Object.keys(steps).find((key) => input.prompt.includes(`Task: ${key}`));
+    // Linha inteira: "Task: ui" não pode casar com "Task: ui com filtro".
+    // Chave terminada em "*" casa por prefixo.
+    const lines = input.prompt.split("\n");
+    const title = Object.keys(steps).find((key) =>
+      key.endsWith("*")
+        ? lines.some((line) => line.startsWith(`Task: ${key.slice(0, -1)}`))
+        : lines.includes(`Task: ${key}`),
+    );
     return title ? steps[title] : undefined;
   };
 }
@@ -254,6 +264,7 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
   ) {
     const graph = buildFeatureGraph(deps, options.checkpointer ?? new MemorySaver());
     const config = {
+      recursionLimit: FEATURE_GRAPH_RECURSION_LIMIT,
       configurable: { thread_id: input.featureId, ...(control ? { attemptControl: control } : {}) },
     };
     const approvals = [...(options.approvals ?? [])];
@@ -457,7 +468,7 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
               writeFile: { path: "config.txt", content: "valor=B\n" },
               commit: "feat: B",
             },
-            "Resolver conflito": { writeFile: { path: "config.txt", content: "valor=A+B\n" } },
+            "Resolver conflito*": { writeFile: { path: "config.txt", content: "valor=A+B\n" } },
           }),
         ),
       ],
@@ -1173,4 +1184,101 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
       expect.arrayContaining(["memory.retrieve_failed", "memory.write_failed"]),
     );
   });
+
+  // --- M6 ------------------------------------------------------------------
+
+  it("M6.4: mudança de requisito com a Feature rodando → cancela o que não começou, replaneja e conclui", async () => {
+    const replanJudge: Responder = (input) =>
+      input.prompt.includes("Replaneje o restante")
+        ? {
+            // Lead mais lento que a Task em andamento: a regressão do E2E real
+            // (gates e review rodando antes de o replan anexar as Tasks novas).
+            delayMs: 900,
+            succeed: {
+              structuredOutput: {
+                tasks: [
+                  {
+                    key: "t1",
+                    title: "ui com filtro",
+                    description: "UI com filtro por categoria",
+                    kind: "write",
+                    role: "generic",
+                    expectedPaths: [],
+                    dependsOn: [],
+                  },
+                ],
+              },
+            },
+          }
+        : approvingJudge(input);
+    const harness = fakeTarget(
+      "fake-a",
+      "anthropic",
+      byTitle({
+        api: { delayMs: 600, writeFile: { path: "api.txt", content: "api" }, commit: "feat: api" },
+        ui: { writeFile: { path: "ui.txt", content: "ui" }, commit: "feat: ui" },
+        "ui com filtro": {
+          writeFile: { path: "ui-filtro.txt", content: "ui+filtro" },
+          commit: "feat: ui com filtro",
+        },
+      }),
+      replanJudge,
+    );
+    const { feature, deps, input } = await setup({
+      targets: [harness],
+      plan: planOf({ key: "t1", title: "api" }, { key: "t2", title: "ui", dependsOn: ["t1"] }),
+    });
+    const running = run(deps, input);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const replan = await replanFeature(
+      deps,
+      new AgentRunnerImpl(harness.harness),
+      {
+        featureId: feature.id,
+        projectId: feature.projectId,
+        objective: input.objective,
+        change: "a UI precisa ter filtro por categoria",
+        reason: "mudança de requisito",
+        roleIds: ["generic"],
+        cwd: repoPath,
+        timeoutMs: 5_000,
+      },
+      new AbortController().signal,
+    );
+    await running;
+
+    const { feature: done, tasks } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    expect(replan.cancelled).toHaveLength(1);
+    expect(tasks.map((task) => [task.title, task.status])).toEqual([
+      ["api", "completed"],
+      ["ui", "cancelled"],
+      ["ui com filtro", "completed"],
+    ]);
+    // A mudança entra na verificação de requisitos.
+    const checks = (harness.harness as FakeHarness).receivedPrompts.filter((prompt) =>
+      prompt.includes("Verifique se a mudança"),
+    );
+    expect(checks.at(-1)).toContain("(requisito alterado) a UI precisa ter filtro por categoria");
+  });
+
+  it("recursionLimit: Feature com 15 Tasks em cadeia não estoura o limite de passos do LangGraph", async () => {
+    const steps: Record<string, FakeHarnessStep> = {};
+    const tasks = Array.from({ length: 15 }, (_, index) => {
+      const title = `passo-${index}`;
+      steps[title] = {
+        writeFile: { path: `${title}.txt`, content: title },
+        commit: `feat: ${title}`,
+      };
+      return { key: `t${index}`, title, dependsOn: index === 0 ? [] : [`t${index - 1}`] };
+    });
+    const { feature, deps, input } = await setup({
+      targets: [fakeTarget("fake-a", "anthropic", byTitle(steps))],
+      plan: planOf(...tasks),
+    });
+    await run(deps, input);
+    const { feature: done, tasks: rows } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    expect(rows.every((task) => task.status === "completed")).toBe(true);
+  }, 60_000);
 });

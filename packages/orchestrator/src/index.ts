@@ -14,7 +14,12 @@ export type {
   IntentTriageSource,
 } from "./intent-triage.js";
 
-export { buildFeatureGraph, DEFAULT_TASK_TIMEOUT_MS, FeatureGraphState } from "./feature-graph.js";
+export {
+  buildFeatureGraph,
+  DEFAULT_TASK_TIMEOUT_MS,
+  FEATURE_GRAPH_RECURSION_LIMIT,
+  FeatureGraphState,
+} from "./feature-graph.js";
 export type { FeatureGraph, FeatureGraphDeps, FeatureGraphInput } from "./feature-graph.js";
 
 export { candidatesOf, findTarget } from "./harness-registry.js";
@@ -88,3 +93,15 @@ export type { ApprovalDecision } from "./feature-graph.js";
 
 export { DISTILLED_KINDS, distillMemories } from "./memory-writer.js";
 export type { FeatureRetrospective, MemoryPort } from "./memory-writer.js";
+
+export {
+  LEAD_ACTIONS,
+  LEAD_CHAT_INSTRUCTIONS,
+  LeadActionSchema,
+  decideLeadAction,
+  summarizeConversation,
+} from "./lead-chat.js";
+export type { ChatContext, LeadAction } from "./lead-chat.js";
+export { pickJudge } from "./judge.js";
+export { replanFeature } from "./replan.js";
+export type { ReplanInput, ReplanResult } from "./replan.js";

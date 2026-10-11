@@ -313,3 +313,36 @@ export const memories = pgTable(
     index("memories_embedding_idx").using("hnsw", table.embedding.op("vector_cosine_ops")),
   ],
 );
+
+// M6.1 — conversa com o Lead (`apo chat`), uma thread por Project. Mensagens
+// antigas viram `summary` quando a thread passa do limite; o prompt leva o
+// resumo + as últimas mensagens.
+export const conversationThreads = pgTable("conversation_threads", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id),
+  summary: text("summary"),
+  /** Mensagens até aqui (inclusive) já estão no `summary`. */
+  summarizedUntil: timestamp("summarized_until", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const conversationMessages = pgTable(
+  "conversation_messages",
+  {
+    id: text("id").primaryKey(),
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => conversationThreads.id),
+    /** user | lead */
+    role: text("role").notNull(),
+    content: text("content").notNull(),
+    /** Ação estruturada do Lead (M6.3) e o resultado da execução pelo daemon. */
+    action: jsonb("action"),
+    result: jsonb("result"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("conversation_messages_thread_idx").on(table.threadId, table.createdAt)],
+);

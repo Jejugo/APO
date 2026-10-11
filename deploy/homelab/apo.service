@@ -1,0 +1,47 @@
+# APO daemon (M6.6). Instalado em /etc/systemd/system/apo.service pelo install.sh.
+[Unit]
+Description=APO — orquestrador de agentes de código
+Documentation=file:///opt/apo/docs/homelab.md
+After=network-online.target postgresql.service tailscaled.service
+Wants=network-online.target tailscaled.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=apo
+Group=apo
+WorkingDirectory=/home/apo
+Environment=HOME=/home/apo
+Environment=NODE_ENV=production
+# Node 24 isolado (/opt/node24) na frente; claude global em /usr/local/bin.
+Environment=PATH=/opt/node24/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/node24/bin/node /opt/apo/apps/daemon/dist/main.js
+Restart=on-failure
+RestartSec=5
+# Stop/restart mata a árvore inteira (workers incluídos) pelo cgroup.
+KillMode=control-group
+TimeoutStopSec=30
+
+# Hardening: o daemon (e os workers que ele lança) só escrevem em /home/apo;
+# o resto da máquina é só leitura e as outras homes nem aparecem.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/apo
+ReadWritePaths=/home/apo
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

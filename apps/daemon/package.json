@@ -21,6 +21,8 @@
     "@apo/routing": "workspace:*",
     "@langchain/langgraph": "^1.4.21",
     "@langchain/langgraph-checkpoint-postgres": "^1.0.6",
+    "drizzle-orm": "^0.36.4",
+    "execa": "^10.1.0",
     "fastify": "^5.12.5",
     "zod": "^3.25.76"
   }

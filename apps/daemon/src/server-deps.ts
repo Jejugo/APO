@@ -1,4 +1,5 @@
 import type {
+  ConversationRepository,
   EventRepository,
   FeatureRepository,
   HandoverRepository,
@@ -27,6 +28,7 @@ export interface ServerDeps {
   handovers: HandoverRepository;
   qualityResults: QualityResultRepository;
   featureRunner: FeatureRunner;
+  conversations: ConversationRepository;
   /** M5: ausente quando `memory.enabled: false`. */
   memory?: MemoryService;
   memoryRetrieve?: RetrieveOptions;
@@ -34,4 +36,6 @@ export interface ServerDeps {
   capacity: CapacityMonitor;
   routingPolicy: RoutingPolicy;
   worktreesRoot: string;
+  /** M6.9: detalhes do `/health` (Postgres, providers, Jev, memória). */
+  health?: () => Promise<Record<string, unknown>>;
 }

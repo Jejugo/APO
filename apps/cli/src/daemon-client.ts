@@ -1,10 +1,50 @@
-import { request } from "node:http";
+import { readFileSync } from "node:fs";
+import { type RequestOptions, request } from "node:http";
 import type { IncomingMessage } from "node:http";
-import { GlobalConfigSchema, expandHome, globalConfigPath, loadConfig } from "@apo/config";
+import { join } from "node:path";
+import { GlobalConfigSchema, apoHome, expandHome, globalConfigPath, loadConfig } from "@apo/config";
 
 export function resolveSocketPath(): string {
   const config = loadConfig(globalConfigPath(), GlobalConfigSchema);
   return expandHome(config.socketPath ?? "~/.apo/apo.sock");
+}
+
+/**
+ * M6.7 — daemon remoto (ex.: na VM, pelo Tailscale): `APO_URL=http://100.x.y.z:7400`
+ * e o token em `APO_TOKEN` (ou `APO_REMOTE_TOKEN` em ~/.apo/secrets.env).
+ * Sem `APO_URL`, fala com o daemon local pelo socket Unix.
+ */
+function remoteToken(): string | undefined {
+  if (process.env.APO_TOKEN) return process.env.APO_TOKEN;
+  try {
+    const line = readFileSync(join(apoHome(), "secrets.env"), "utf8")
+      .split("\n")
+      .find((entry) => entry.trim().startsWith("APO_REMOTE_TOKEN="));
+    return line
+      ?.split("=")
+      .slice(1)
+      .join("=")
+      .trim()
+      .replace(/^(['"])(.*)\1$/, "$2");
+  } catch {
+    return undefined;
+  }
+}
+
+function connection(path: string, method: string): RequestOptions {
+  const remote = process.env.APO_URL;
+  if (!remote) {
+    return { socketPath: resolveSocketPath(), path, method };
+  }
+  const url = new URL(path, remote);
+  const token = remoteToken();
+  return {
+    hostname: url.hostname,
+    port: url.port,
+    path: `${url.pathname}${url.search}`,
+    method,
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  };
 }
 
 export class DaemonUnavailableError extends Error {
@@ -33,18 +73,22 @@ export interface DaemonRequestOptions {
 
 /** Cliente HTTP mínimo sobre o Unix socket do daemon (TECHNICAL_PLAN.md seção 2). */
 export function daemonRequest<T>(path: string, options: DaemonRequestOptions = {}): Promise<T> {
-  const socketPath = resolveSocketPath();
   const payload = options.body !== undefined ? JSON.stringify(options.body) : undefined;
+  const base = connection(path, options.method ?? "GET");
 
   return new Promise((resolve, reject) => {
     const req = request(
       {
-        socketPath,
-        path,
-        method: options.method ?? "GET",
-        headers: payload
-          ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) }
-          : {},
+        ...base,
+        headers: {
+          ...(base.headers as Record<string, string> | undefined),
+          ...(payload
+            ? {
+                "content-type": "application/json",
+                "content-length": String(Buffer.byteLength(payload)),
+              }
+            : {}),
+        },
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -84,9 +128,8 @@ export function daemonRequest<T>(path: string, options: DaemonRequestOptions = {
 
 /** Para respostas que não são um JSON único (ex.: SSE de `apo logs -f`). */
 export function daemonStream(path: string): Promise<IncomingMessage> {
-  const socketPath = resolveSocketPath();
   return new Promise((resolve, reject) => {
-    const req = request({ socketPath, path, method: "GET" }, (res) => resolve(res));
+    const req = request(connection(path, "GET"), (res) => resolve(res));
     req.on("error", (error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
         reject(new DaemonUnavailableError());

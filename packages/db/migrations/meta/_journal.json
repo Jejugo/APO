@@ -57,6 +57,13 @@
       "when": 1791688325964,
       "tag": "0007_swift_golden_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791691038657,
+      "tag": "0008_broad_senator_kelly",
+      "breakpoints": true
     }
   ]
 }

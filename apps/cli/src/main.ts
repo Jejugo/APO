@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { registerChatCommand } from "./commands/chat.js";
 import { registerControlCommands } from "./commands/control.js";
 import { registerDaemonCommands } from "./commands/daemon.js";
 import { registerFeatureCommands } from "./commands/feature.js";
@@ -22,6 +23,7 @@ registerDaemonCommands(program);
 registerProjectCommands(program);
 registerMemoryCommands(program);
 registerRunCommand(program);
+registerChatCommand(program);
 registerFeatureCommands(program);
 registerTaskCommands(program);
 registerRoleCommands(program);

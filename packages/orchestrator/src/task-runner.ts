@@ -10,7 +10,8 @@
 // do checkpoint do graph.
 
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { GENERIC_ROLE_ID, type RoleDefinition, loadRoleRegistry } from "@apo/config";
@@ -113,7 +114,9 @@ export type TaskRunStatus =
   | "failed"
   | "cancelled"
   | "needs_human"
-  | "paused_capacity";
+  | "paused_capacity"
+  /** Cancelada por replan antes de começar (M6.4) — não afeta a Feature. */
+  | "skipped";
 
 export interface TaskRunOutcome {
   status: TaskRunStatus;
@@ -164,6 +167,17 @@ export async function runTask(
   const task = await deps.tasks.getById(taskId);
   if (!task) throw new Error(`runTask: Task ${taskId} não existe`);
   if (task.status === "completed") return { status: "completed" };
+  if (task.status === "cancelled") return { status: "skipped", reason: "cancelada pelo replan" };
+  // Reivindica a Task antes de qualquer trabalho lento (worktree, prepare): o
+  // replan só cancela o que ainda está pending/ready, e as duas transições são
+  // atômicas — quem chegar primeiro ganha.
+  // `pending` = segurada por um replan (M6.4): não pode ser reivindicada.
+  const claimed = await deps.tasks.transitionIf(
+    taskId,
+    ["ready", "retrying", "running"],
+    "running",
+  );
+  if (!claimed) return { status: "skipped", reason: "segurada ou cancelada pelo replan" };
 
   const capacityOf = (provider: Parameters<CapacityMonitor["get"]>[0]) =>
     deps.capacity.get(provider);
@@ -482,12 +496,23 @@ export async function runTask(
             logPath,
             env: { ...(env ?? {}), APO_RESULT_PATH: resultPath },
             extraWritableDirs: [dirname(resultPath)],
+            // M6.8: PID do CLI em runs/<attempt>/worker.pid — o boot do daemon
+            // mata o que sobrou de uma execução anterior que caiu no meio.
+            onSpawn: (pid: number) => {
+              try {
+                mkdirSync(dirname(resultPath), { recursive: true });
+                writeFileSync(join(dirname(resultPath), "worker.pid"), String(pid));
+              } catch {
+                // Só serve para limpeza no boot; nunca impede o attempt.
+              }
+            },
             ...(entry.candidate.model !== undefined ? { model: entry.candidate.model } : {}),
           },
           signal,
         );
       } finally {
         deps.capacity.workerFinished(entry.harness.provider);
+        await rm(join(dirname(resultPath), "worker.pid"), { force: true });
         control?.attemptFinished(taskId);
       }
     } finally {

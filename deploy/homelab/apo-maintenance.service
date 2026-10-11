@@ -1,0 +1,19 @@
+# M6.9 — backup diário do Postgres e limpeza de logs/runs antigos.
+[Unit]
+Description=APO — backup e manutenção diária
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=apo
+Group=apo
+Environment=HOME=/home/apo
+Environment=PATH=/opt/node24/bin:/usr/bin:/bin
+ExecStart=/opt/apo/deploy/homelab/maintenance.sh
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindPaths=/home/apo
+ReadWritePaths=/home/apo
+PrivateTmp=yes

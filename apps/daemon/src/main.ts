@@ -15,6 +15,7 @@ import {
 } from "@apo/config";
 import {
   AgentMessageRepository,
+  ConversationRepository,
   EventRepository,
   FeatureRepository,
   HandoverRepository,
@@ -42,11 +43,13 @@ import {
   type RoutingPolicy,
   type TaskRouter,
 } from "@apo/routing";
+import { sql } from "drizzle-orm";
 import { createCapacityMonitor } from "./capacity.js";
+import { killOrphanWorkers, removeOrphanWorktrees } from "./cleanup.js";
 import { FeatureRunner } from "./feature-runner.js";
 import { resumeFeatures, startCapacityResumer } from "./resume.js";
 import { loadSecretsFile } from "./secrets.js";
-import { buildServer } from "./server.js";
+import { type ServerDeps, buildServer } from "./server.js";
 import { buildTargetRegistry } from "./targets.js";
 
 const DEFAULT_DATABASE_URL = "postgres://apo:apo@localhost:5433/apo";
@@ -191,6 +194,11 @@ async function main(): Promise<void> {
   );
   await featureRunner.setup();
 
+  // M6.8 — antes do recovery: workers órfãos de um daemon que caiu e
+  // worktrees de Features que já terminaram.
+  await killOrphanWorkers(join(apoHome(), "runs"), worktreesRoot, logger);
+  await removeOrphanWorktrees({ features, projects, logger }, worktreesRoot);
+
   // M1.13 — Recovery: nenhum attempt "working" sobrevive a um restart; Features
   // ativas retomam re-invocando o graph (nodes idempotentes).
   const interruptedCount = await taskAttempts.interruptAllWorking();
@@ -218,7 +226,7 @@ async function main(): Promise<void> {
   // M3.9 — Features em paused_capacity voltam quando algum provider volta.
   startCapacityResumer({ ...resumeDeps, capacity, targets });
 
-  const app = buildServer({
+  const serverDeps: ServerDeps = {
     logger,
     projects,
     projectAgents,
@@ -230,6 +238,7 @@ async function main(): Promise<void> {
     handovers,
     qualityResults,
     featureRunner,
+    conversations: new ConversationRepository(db),
     ...(memory
       ? {
           memory,
@@ -243,9 +252,67 @@ async function main(): Promise<void> {
     capacity,
     routingPolicy,
     worktreesRoot,
-  });
-
+    health: async () => {
+      let postgres = "ok";
+      try {
+        await db.execute(sql`select 1`);
+      } catch (error) {
+        postgres = error instanceof Error ? error.message : String(error);
+      }
+      return {
+        postgres,
+        providers: targets.map((entry) => {
+          const snapshot = capacity.get(entry.candidate.provider);
+          return {
+            target: entry.candidate.targetId,
+            availability: snapshot.availability,
+            activeWorkers: snapshot.activeWorkers,
+            ...(snapshot.resetAt ? { resetAt: snapshot.resetAt.toISOString() } : {}),
+          };
+        }),
+        taskRouter: taskRouter?.id ?? "rule",
+        memory: memory ? "on" : "off",
+      };
+    },
+  };
+  const app = buildServer(serverDeps);
   await app.listen({ path: socketPath });
+
+  // M6.7 — listener TCP com token (IP do Tailscale). Sem token, não sobe.
+  const remoteConfig = GlobalConfigSchema.shape.remote.parse(globalConfig.remote ?? {});
+  let remoteApp: ReturnType<typeof buildServer> | undefined;
+  if (remoteConfig.listen) {
+    const remoteToken = process.env[remoteConfig.tokenEnv ?? "APO_REMOTE_TOKEN"];
+    if (!remoteToken || remoteToken.length < 24) {
+      logger.error(
+        { tokenEnv: remoteConfig.tokenEnv },
+        "remote.listen configurado sem token (mínimo 24 caracteres); listener TCP não iniciado",
+      );
+    } else {
+      const [host, port] = [
+        remoteConfig.listen.slice(0, remoteConfig.listen.lastIndexOf(":")),
+        Number(remoteConfig.listen.slice(remoteConfig.listen.lastIndexOf(":") + 1)),
+      ];
+      const remote = buildServer(serverDeps, { authToken: remoteToken });
+      remoteApp = remote;
+      // No boot da VM o IP do Tailscale pode ainda não existir: tenta de novo
+      // em segundo plano em vez de derrubar o daemon (o socket local já serve).
+      const listenRemote = async (attempt: number): Promise<void> => {
+        try {
+          await remote.listen({ host, port });
+          logger.info({ host, port }, "listener remoto (com token) ativo");
+        } catch (error) {
+          const delay = Math.min(60_000, 2_000 * 2 ** Math.min(attempt, 5));
+          logger.warn(
+            { error, host, port, retryInMs: delay },
+            "listener remoto indisponível; tentando de novo",
+          );
+          setTimeout(() => void listenRemote(attempt + 1), delay).unref();
+        }
+      };
+      void listenRemote(0);
+    }
+  }
   writePidFile(pidFilePath, process.pid);
   logger.info(
     {
@@ -265,6 +332,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, "apo daemon encerrando");
     await app.close();
+    await remoteApp?.close();
     removePidFileIfOwnedBy(pidFilePath, process.pid);
     rmSync(socketPath, { force: true });
     process.exit(0);
