@@ -6,6 +6,7 @@ set -euo pipefail
 
 NODE_VERSION="v24.21.0"
 PNPM_VERSION="12.4.2"
+CLAUDE_CODE_VERSION="2.1.296"
 APO_USER="apo"
 APO_HOME="/home/${APO_USER}"
 SRC="/opt/apo"
@@ -30,7 +31,9 @@ if [[ "$("${NODE_DIR}/bin/node" --version 2>/dev/null || true)" != "${NODE_VERSI
   rm -rf "${tmp}"
 fi
 export PATH="${NODE_DIR}/bin:${PATH}"
-npm install -g --silent "pnpm@${PNPM_VERSION}" @openai/codex >/dev/null
+# CLIs dos agentes do APO ficam aqui (não usa o claude/codex globais do
+# sistema): versão sob controle do APO — o harness depende de flags recentes.
+npm install -g --silent "pnpm@${PNPM_VERSION}" @openai/codex "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" >/dev/null
 
 echo "==> usuário ${APO_USER} (sem sudo, sem docker)"
 if ! id "${APO_USER}" >/dev/null 2>&1; then

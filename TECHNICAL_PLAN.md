@@ -1015,6 +1015,8 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 - **Correções em paralelo** sobre os mesmos arquivos geravam uma cascata de conflitos. As Tasks corretivas de uma rodada agora rodam em sequência.
 - **`recursionLimit`:** o padrão do LangGraph (25 passos) estouraria numa Feature com muitas ondas; agora 1000.
 - **VM:** Node do sistema é 22; o APO usa Node 24 isolado em `/opt/node24`. CPU da VM precisava ser `host` no Proxmox (AVX/PCLMUL para `agy` e embeddings). DNS da VM oscilou durante o `apt` — downloads do instalador com retry.
+- **Hardening × sandbox do Codex:** `RestrictNamespaces=yes` na unit impedia o `bwrap` (sandbox de escrita do Codex) de criar namespaces; o worker não escrevia nada e mesmo assim terminava com sucesso (`task.no_changes` em todas as Tasks, até estourar as rodadas de correção). Diretiva removida; o resto do hardening continua. O review pegou o problema ("src/capitalize.ts não existe"), o que mostra o valor de verificar requisitos contra o código e não contra o que o worker diz.
+- **CLIs do APO isolados:** o `claude` global da VM (2.1.251) não tinha flags que o harness usa; o APO tem os próprios `claude`/`codex`/`pnpm` em `/opt/node24`, com versão fixada no `install.sh`, sem tocar nos do usuário.
 - M6.10 (mensageria ao vivo) não construído: condicional e nenhum uso real pediu.
 
 ---

@@ -38,7 +38,10 @@ ProtectClock=yes
 ProtectHostname=yes
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
-RestrictNamespaces=yes
+# Sem RestrictNamespaces: o sandbox do Codex (bubblewrap) cria namespaces de
+# usuário/mount para confinar a escrita do worker. Com RestrictNamespaces=yes o
+# bwrap falha, o worker não escreve nada e ainda assim termina "com sucesso"
+# (achado do E2E real na VM).
 LockPersonality=yes
 SystemCallArchitectures=native
 UMask=0027
