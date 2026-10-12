@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { daemonRequest } from "../daemon-client.js";
+import { watchFeature } from "../live/watch.js";
 
 interface FeatureRow {
   id: string;
@@ -43,6 +44,15 @@ export function registerFeatureCommands(program: Command): void {
       for (const row of rows) {
         console.log(`${row.id}  [${row.status}]  ${row.objective}`);
       }
+    });
+
+  feature
+    .command("watch <id>")
+    .description(
+      "Painel ao vivo da Feature: Tasks, agentes e eventos (número + Enter abre o agente ao vivo)",
+    )
+    .action(async (id: string) => {
+      await watchFeature(id);
     });
 
   feature

@@ -14,6 +14,7 @@ import { registerRunCommand } from "./commands/run.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerTaskCommands } from "./commands/task.js";
 import { DaemonHttpError, DaemonUnavailableError } from "./daemon-client.js";
+import { watchFeature } from "./live/watch.js";
 
 const program = new Command();
 program.name("apo").description("Orquestrador local de agentes de código").version("0.0.0");
@@ -24,6 +25,13 @@ registerProjectCommands(program);
 registerMemoryCommands(program);
 registerRunCommand(program);
 registerChatCommand(program);
+// Atalho de `apo feature watch` — o comando mais usado no dia a dia.
+program
+  .command("watch <featureId>")
+  .description("Painel ao vivo da Feature (atalho de `apo feature watch`)")
+  .action(async (featureId: string) => {
+    await watchFeature(featureId);
+  });
 registerFeatureCommands(program);
 registerTaskCommands(program);
 registerRoleCommands(program);

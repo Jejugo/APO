@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -76,5 +76,32 @@ describe("runSupervisedProcess — stall (M2.3)", { timeout: 20_000 }, () => {
     });
     expect(result.canceled).toBe(true);
     expect(result.stalled).toBe(false);
+  });
+});
+
+describe("runSupervisedProcess — log ao vivo", () => {
+  it("o log cresce enquanto o processo roda, com stderr marcado e rodapé de saída", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "apo-live-"));
+    const logPath = join(dir, "attempt.log");
+    const running = runSupervisedProcess({
+      file: "sh",
+      args: ["-c", "echo primeiro; sleep 0.6; echo erro >&2; echo segundo"],
+      cwd: dir,
+      env: { PATH: process.env.PATH ?? "" },
+      timeoutMs: 10_000,
+      signal: new AbortController().signal,
+      logPath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const meio = await readFile(logPath, "utf8");
+    expect(meio).toContain("primeiro");
+    expect(meio).not.toContain("segundo");
+
+    await running;
+    const fim = await readFile(logPath, "utf8");
+    expect(fim).toContain("[stderr] erro");
+    expect(fim).toContain("segundo");
+    expect(fim).toMatch(/# fim .* exit=0/);
+    await rm(dir, { recursive: true, force: true });
   });
 });

@@ -14,6 +14,7 @@ export { ClaudeCodeHarness } from "./claude-code/harness.js";
 export {
   classifyClaudeCodeFailure,
   type ClaudeCodeResultJson,
+  parseClaudeCodeStream,
 } from "./claude-code/classify-failure.js";
 
 export { CodexHarness } from "./codex/harness.js";

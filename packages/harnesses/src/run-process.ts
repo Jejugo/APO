@@ -4,13 +4,22 @@
 // - stdin fechado (os dois CLIs travam esperando EOF sem isso — spikes M0.9/M0.10);
 // - environment **só** com o que veio em `env` (`extendEnv: false`), nunca o
 //   `process.env` do daemon (M3.0b, seção 6.3 do TECHNICAL_PLAN.md);
-// - log por attempt em `logPath` (stdout + stderr), para depurar depois;
+// - log por attempt em `logPath`, gravado ENQUANTO o processo roda (stdout
+//   como chega; stderr com prefixo `[stderr] `; linhas de controle com `# `) —
+//   é o que o `apo task tail` acompanha ao vivo;
 // - `stalled` (M2.3): sem saída e sem mudança em disco (cwd + `activityPaths`)
 //   por `stallTimeoutMs` → mata a árvore. Na dúvida, prefere não detectar
 //   (falso negativo cai no timeout duro; falso positivo mataria trabalho bom).
 
-import { type FSWatcher, existsSync, watch } from "node:fs";
-import { appendFile, mkdir } from "node:fs/promises";
+import {
+  type FSWatcher,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  watch,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { execa } from "execa";
 
@@ -95,8 +104,19 @@ export async function runSupervisedProcess(
     reject: false,
   });
   if (subprocess.pid !== undefined) input.onSpawn?.(subprocess.pid);
-  subprocess.stdout?.on("data", watch.touch);
-  subprocess.stderr?.on("data", watch.touch);
+  const log = openAttemptLog(input);
+  subprocess.stdout?.on("data", (chunk: Buffer) => {
+    watch.touch();
+    log.write(chunk.toString("utf8"));
+  });
+  let stderrTail = "";
+  subprocess.stderr?.on("data", (chunk: Buffer) => {
+    watch.touch();
+    const text = stderrTail + chunk.toString("utf8");
+    const lines = text.split("\n");
+    stderrTail = lines.pop() ?? "";
+    for (const line of lines) log.write(`[stderr] ${line}\n`);
+  });
 
   let result: Awaited<typeof subprocess>;
   try {
@@ -104,8 +124,8 @@ export async function runSupervisedProcess(
   } finally {
     watch.stop();
   }
-
-  await writeAttemptLog(input, result.stdout, result.stderr, result.exitCode);
+  if (stderrTail) log.write(`[stderr] ${stderrTail}\n`);
+  log.close(`# fim ${new Date().toISOString()} exit=${result.exitCode ?? "?"}\n`);
 
   // Cancelamento externo tem prioridade: quem pediu decide o rumo.
   const stalled = stall.signal.aborted && !input.signal.aborted;
@@ -120,21 +140,37 @@ export async function runSupervisedProcess(
   };
 }
 
-async function writeAttemptLog(
-  input: SupervisedProcessInput,
-  stdout: string,
-  stderr: string,
-  exitCode: number | undefined,
-): Promise<void> {
+/** Log do attempt aberto em append; falhar ao gravar nunca derruba a execução. */
+function openAttemptLog(input: SupervisedProcessInput): {
+  write(text: string): void;
+  close(footer: string): void;
+} {
+  let fd: number | undefined;
   try {
-    await mkdir(dirname(input.logPath), { recursive: true });
-    const header = `# ${new Date().toISOString()} ${input.file} (cwd: ${input.cwd}) exit=${exitCode ?? "?"}\n`;
-    await appendFile(
-      input.logPath,
-      `${header}## stdout\n${stdout}\n## stderr\n${stderr}\n`,
-      "utf8",
-    );
+    mkdirSync(dirname(input.logPath), { recursive: true });
+    fd = openSync(input.logPath, "a");
+    writeSync(fd, `# ${new Date().toISOString()} ${input.file} (cwd: ${input.cwd}) início\n`);
   } catch {
-    // Log é auxiliar: falhar ao gravar não pode derrubar a execução.
+    fd = undefined;
   }
+  return {
+    write(text: string) {
+      if (fd === undefined) return;
+      try {
+        writeSync(fd, text);
+      } catch {
+        // disco cheio etc.: segue sem log
+      }
+    },
+    close(footer: string) {
+      if (fd === undefined) return;
+      try {
+        writeSync(fd, footer);
+        closeSync(fd);
+      } catch {
+        // idem
+      }
+      fd = undefined;
+    },
+  };
 }

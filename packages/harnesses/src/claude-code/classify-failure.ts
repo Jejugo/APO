@@ -46,3 +46,22 @@ export function classifyClaudeCodeFailure(json: ClaudeCodeResultJson): AgentFail
   // configuração/execução, não condições retomáveis automaticamente.
   return { kind: "crash", message };
 }
+
+/**
+ * `--output-format stream-json`: um evento JSON por linha; o resultado final é
+ * o último evento `type: "result"` (mesmo formato do `--output-format json`).
+ */
+export function parseClaudeCodeStream(stdout: string): ClaudeCodeResultJson | undefined {
+  const lines = stdout.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line?.startsWith("{")) continue;
+    try {
+      const event = JSON.parse(line) as ClaudeCodeResultJson;
+      if (event.type === "result") return event;
+    } catch {
+      // linha parcial ou não-JSON: ignora
+    }
+  }
+  return undefined;
+}

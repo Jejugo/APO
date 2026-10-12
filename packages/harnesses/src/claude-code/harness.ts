@@ -11,7 +11,7 @@ import type {
 } from "../types.js";
 import { buildWorkerEnvironment } from "../worker-env.js";
 import { buildClaudeCodeArgs } from "./build-args.js";
-import { type ClaudeCodeResultJson, classifyClaudeCodeFailure } from "./classify-failure.js";
+import { classifyClaudeCodeFailure, parseClaudeCodeStream } from "./classify-failure.js";
 
 export class ClaudeCodeHarness implements AgentHarness {
   readonly id: HarnessId = "claude-code";
@@ -54,8 +54,8 @@ async function run(
     logPath: input.logPath,
     ...(input.stallTimeoutMs ? { stallTimeoutMs: input.stallTimeoutMs } : {}),
     ...(input.onSpawn ? { onSpawn: input.onSpawn } : {}),
-    // Em `--output-format json` o stdout fica mudo até o fim; o transcript da
-    // sessão em ~/.claude/projects é o sinal de vida.
+    // Com stream-json o stdout já é sinal de vida; o transcript da sessão em
+    // ~/.claude/projects continua contando (ex.: raciocínio longo sem evento).
     activityPaths: env.HOME ? [join(env.HOME, ".claude", "projects")] : [],
   });
 
@@ -86,16 +86,14 @@ async function run(
     };
   }
 
-  let json: ClaudeCodeResultJson;
-  try {
-    json = JSON.parse(result.stdout) as ClaudeCodeResultJson;
-  } catch {
-    const raw = `${result.stdout}\n${result.stderr}`;
+  const json = parseClaudeCodeStream(result.stdout);
+  if (!json) {
+    const raw = `${result.stdout.slice(-2000)}\n${result.stderr}`;
     return {
       outcome: "failure",
       failure: detectLimitFailure(raw) ?? {
         kind: "crash",
-        message: `Saída não é JSON válido (exit ${result.exitCode}): ${raw.slice(0, 500)}`,
+        message: `Sem evento "result" na saída (exit ${result.exitCode}): ${raw.slice(-500)}`,
       },
       durationMs,
     };

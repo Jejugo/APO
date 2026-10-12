@@ -159,6 +159,9 @@ async function main(): Promise<void> {
     unknownResetRetryMs: providersConfig.unknownResetRetryMinutes * 60_000,
   });
 
+  const attemptLogPath = (attemptId: string) =>
+    join(apoHome(), "logs", "attempts", `${attemptId}.log`);
+
   const featureRunner = new FeatureRunner(
     {
       logger,
@@ -184,7 +187,7 @@ async function main(): Promise<void> {
         );
         return buildWorkerEnvironment(projectConfig.worker?.env?.allow ?? []);
       },
-      attemptLogPath: (attemptId) => join(apoHome(), "logs", "attempts", `${attemptId}.log`),
+      attemptLogPath,
       runsRoot: join(apoHome(), "runs"),
       stallTimeoutMs: (limits?.stallTimeoutMinutes ?? 10) * 60_000,
       // M2.4: compartilhado entre todas as Features do daemon.
@@ -227,6 +230,7 @@ async function main(): Promise<void> {
   startCapacityResumer({ ...resumeDeps, capacity, targets });
 
   const serverDeps: ServerDeps = {
+    attemptLogPath,
     logger,
     projects,
     projectAgents,

@@ -36,6 +36,8 @@ export interface ServerDeps {
   capacity: CapacityMonitor;
   routingPolicy: RoutingPolicy;
   worktreesRoot: string;
+  /** Caminho do log de um attempt (o mesmo que o runner usa) — `apo task tail`. */
+  attemptLogPath?: (attemptId: string) => string;
   /** M6.9: detalhes do `/health` (Postgres, providers, Jev, memória). */
   health?: () => Promise<Record<string, unknown>>;
 }

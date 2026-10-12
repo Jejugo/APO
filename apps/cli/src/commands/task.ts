@@ -1,5 +1,7 @@
 import type { Command } from "commander";
 import { daemonRequest } from "../daemon-client.js";
+import { c, formatAgentLine } from "../live/format.js";
+import { followTask } from "../live/tail.js";
 
 interface TaskRow {
   id: string;
@@ -89,6 +91,47 @@ export function registerTaskCommands(program: Command): void {
           }
         }
       }
+    });
+
+  task
+    .command("tail <id>")
+    .description(
+      "O que o agente da Task está fazendo (comandos, arquivos, mensagens); -f acompanha ao vivo",
+    )
+    .option("-f, --follow", "acompanha até a Task terminar (troca de attempt sozinho em failover)")
+    .option("--raw", "linhas cruas do log, sem formatar")
+    .action(async (id: string, options: { follow?: boolean; raw?: boolean }) => {
+      const show = (line: string) => {
+        if (options.raw) console.log(line);
+        else for (const out of formatAgentLine(line)) console.log(out);
+      };
+      if (!options.follow) {
+        const data = await daemonRequest<{
+          attempt: { n: number; target: string | null; status: string } | null;
+          lines: string[];
+        }>(`/tasks/${id}/live`);
+        if (!data.attempt) {
+          console.log("A Task ainda não começou.");
+          return;
+        }
+        console.log(
+          c.bold(
+            `── attempt #${data.attempt.n} em ${data.attempt.target ?? "?"} (${data.attempt.status}) ──`,
+          ),
+        );
+        for (const line of data.lines) show(line);
+        return;
+      }
+      const follow = await followTask(id, {
+        onAttempt: (attempt) =>
+          console.log(
+            c.bold(`\n── attempt #${attempt.n} em ${attempt.target ?? "?"} (${attempt.status}) ──`),
+          ),
+        onLine: show,
+        onDone: (status) => console.log(c.bold(`\n── Task ${status} ──`)),
+      });
+      process.once("SIGINT", () => follow.stop());
+      await follow.finished;
     });
 
   task

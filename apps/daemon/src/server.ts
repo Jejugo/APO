@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import { ZodError } from "zod";
 import { registerChatRoutes } from "./routes/chat.js";
 import { registerFeatureRoutes } from "./routes/features.js";
+import { registerLiveRoutes } from "./routes/live.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
@@ -69,6 +70,7 @@ export function buildServer(deps: ServerDeps, options: ServerOptions = {}) {
   registerTaskRoutes(app, deps);
   registerProviderRoutes(app, deps);
   registerChatRoutes(app, deps);
+  registerLiveRoutes(app, deps);
 
   return app;
 }
