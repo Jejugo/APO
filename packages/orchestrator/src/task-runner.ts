@@ -22,11 +22,12 @@ import type {
   HandoverRepository,
   QualityResultRepository,
   RoutingDecisionRepository,
+  SettingsRepository,
   TaskAttemptRepository,
   TaskRepository,
 } from "@apo/db";
 import type { ExecutionPreference } from "@apo/domain";
-import type { AgentFailure } from "@apo/harnesses";
+import type { AgentExecutionInput, AgentFailure } from "@apo/harnesses";
 import { type Logger, emitEvent } from "@apo/observability";
 import {
   type CapacityMonitor,
@@ -40,10 +41,28 @@ import { z } from "zod";
 import { type AttemptControl, abortReasonOf } from "./attempt-control.js";
 import type { PullRequestCreator } from "./delivery.js";
 import { type TaskHandoverPayload, buildHandover } from "./handover.js";
-import { type TargetRegistry, candidatesOf, findTarget } from "./harness-registry.js";
+import {
+  type ExecutionTargetEntry,
+  type TargetRegistry,
+  candidatesOf,
+  findTarget,
+} from "./harness-registry.js";
+import { pickJudge } from "./judge.js";
 import type { MemoryPort } from "./memory-writer.js";
 import { PLAN_CHANGE_REQUEST, PlanChangeRequestSchema } from "./plan-changes.js";
-import { buildWorkerPrompt } from "./prompt-builder.js";
+import { type AnsweredQuestion, buildResumePrompt, buildWorkerPrompt } from "./prompt-builder.js";
+import {
+  LEAD_FIRST_MIN_CONFIDENCE,
+  type QuestionPayload,
+  WorkerQuestionSchema,
+  askQuestion,
+  effectiveQuestionMode,
+  markAnswerConsumed,
+  pendingAnswerFor,
+  questionLimits,
+  questionsAskedBy,
+  resolveWithLead,
+} from "./questions.js";
 import { loadProjectConfig, prepareWorktree } from "./verify.js";
 import type { WorkerSlots } from "./worker-slots.js";
 import { type WorkspaceMode, decideWorkspace } from "./workspace-policy.js";
@@ -98,6 +117,8 @@ export interface EngineDeps {
   taskRouter?: TaskRouter;
   /** M5.9/M5.10: memória do projeto. Ausente ou falhando → prompt sem memória. */
   memory?: MemoryPort;
+  /** M7: modo global das perguntas (`apo questions auto on|off`). */
+  settings?: SettingsRepository;
 }
 
 export interface FeatureContext {
@@ -116,7 +137,9 @@ export type TaskRunStatus =
   | "needs_human"
   | "paused_capacity"
   /** Cancelada por replan antes de começar (M6.4) — não afeta a Feature. */
-  | "skipped";
+  | "skipped"
+  /** M7: o worker perguntou e a resposta é do usuário — a Task espera. */
+  | "awaiting_answer";
 
 export interface TaskRunOutcome {
   status: TaskRunStatus;
@@ -138,6 +161,8 @@ const WorkerReportSchema = z.object({
   artifacts: z.record(z.string(), z.unknown()).optional(),
   // M4.6: pedidos de mudança de plano, decididos pelo Lead depois da onda.
   planChangeRequests: z.array(PlanChangeRequestSchema).optional(),
+  // M7: pergunta ao usuário (ou ao Lead, conforme o modo).
+  question: WorkerQuestionSchema.optional(),
 });
 
 function attemptStatusFor(failure: AgentFailure | undefined) {
@@ -341,7 +366,26 @@ export async function runTask(
 
     const current = await deps.tasks.getById(taskId);
     const taskPreference = (current?.executionPreference ?? null) as ExecutionPreference | null;
-    const semanticDecision = await semanticFor(taskPreference);
+
+    // M7: resposta a uma pergunta deste worker ainda não usada → retoma a
+    // mesma sessão, no mesmo target, se ele estiver utilizável.
+    const pendingAnswer = await pendingAnswerFor(deps, taskId);
+    let resumeEntry: ExecutionTargetEntry | undefined;
+    if (pendingAnswer?.payload.sessionId) {
+      const candidate = findTarget(deps.targets, pendingAnswer.payload.targetId);
+      const availability = candidate
+        ? capacityOf(candidate.candidate.provider).availability
+        : "exhausted";
+      if (
+        candidate?.harness.resume &&
+        availability !== "exhausted" &&
+        availability !== "degraded"
+      ) {
+        resumeEntry = candidate;
+      }
+    }
+
+    const semanticDecision = resumeEntry ? undefined : await semanticFor(taskPreference);
     const resolve = (excluded: string[]) =>
       resolveExecutionTarget({
         candidates: candidatesOf(deps.targets),
@@ -353,7 +397,14 @@ export async function runTask(
         ...(semanticDecision ? { semantic: semanticDecision } : {}),
         ...(deps.routingPolicy ? { policy: deps.routingPolicy } : {}),
       });
-    let resolved: ResolveResult = resolve(exclude);
+    let resolved: ResolveResult = resumeEntry
+      ? {
+          kind: "target",
+          target: resumeEntry.candidate,
+          resolutionSource: "resume",
+          reason: "retomada da sessão do worker com a resposta à pergunta",
+        }
+      : resolve(exclude);
     // Exclusão vem de crash/timeout (problema da Task). Se esvaziou as opções,
     // tentar de novo no mesmo target é melhor do que pausar por capacidade.
     if (resolved.kind === "no_capacity" && exclude.length > 0) {
@@ -475,41 +526,62 @@ export async function runTask(
 
       signal = control?.newAttempt(taskId) ?? new AbortController().signal;
       attemptStartedAt = new Date();
+      // M7: o worker ainda pode perguntar? (abaixo do teto da Task)
+      const canAsk =
+        (await questionsAskedBy(deps, taskId)) < questionLimits(feature.repoPath).maxPerTask;
+      const answered: AnsweredQuestion | undefined = pendingAnswer
+        ? {
+            question: pendingAnswer.payload.question,
+            answer: pendingAnswer.resolution.answer,
+            answeredBy: pendingAnswer.resolution.answeredBy,
+            rationale: pendingAnswer.resolution.rationale,
+          }
+        : undefined;
+      if (pendingAnswer) await markAnswerConsumed(deps, pendingAnswer.id);
+      const resumeSessionId =
+        resumeEntry && entry === resumeEntry ? pendingAnswer?.payload.sessionId : undefined;
       deps.capacity.workerStarted(entry.harness.provider);
       try {
-        result = await entry.harness.execute(
-          {
-            prompt: buildWorkerPrompt({
-              role,
-              featureObjective: feature.objective,
-              task: { title: task.title, description: task.description, kind: task.kind },
-              dependencies,
-              ...(handover ? { handover } : {}),
-              ...(memory ? { memory } : {}),
-              resultPath,
-            }),
-            cwd,
-            mode: workspaceMode === "shared" ? "read-only" : "workspace-write",
-            networkAccess: false,
-            timeoutMs: deps.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS,
-            stallTimeoutMs: deps.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS,
-            logPath,
-            env: { ...(env ?? {}), APO_RESULT_PATH: resultPath },
-            extraWritableDirs: [dirname(resultPath)],
-            // M6.8: PID do CLI em runs/<attempt>/worker.pid — o boot do daemon
-            // mata o que sobrou de uma execução anterior que caiu no meio.
-            onSpawn: (pid: number) => {
-              try {
-                mkdirSync(dirname(resultPath), { recursive: true });
-                writeFileSync(join(dirname(resultPath), "worker.pid"), String(pid));
-              } catch {
-                // Só serve para limpeza no boot; nunca impede o attempt.
-              }
-            },
-            ...(entry.candidate.model !== undefined ? { model: entry.candidate.model } : {}),
+        const prompt =
+          resumeSessionId && answered
+            ? buildResumePrompt(answered, resultPath, canAsk)
+            : buildWorkerPrompt({
+                role,
+                featureObjective: feature.objective,
+                task: { title: task.title, description: task.description, kind: task.kind },
+                dependencies,
+                ...(handover ? { handover } : {}),
+                ...(memory ? { memory } : {}),
+                ...(answered ? { answered } : {}),
+                resultPath,
+                canAsk,
+              });
+        const run = (input: AgentExecutionInput) =>
+          resumeSessionId && entry.harness.resume
+            ? entry.harness.resume({ ...input, sessionId: resumeSessionId }, signal)
+            : entry.harness.execute(input, signal);
+        result = await run({
+          prompt,
+          cwd,
+          mode: workspaceMode === "shared" ? "read-only" : "workspace-write",
+          networkAccess: false,
+          timeoutMs: deps.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS,
+          stallTimeoutMs: deps.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS,
+          logPath,
+          env: { ...(env ?? {}), APO_RESULT_PATH: resultPath },
+          extraWritableDirs: [dirname(resultPath)],
+          // M6.8: PID do CLI em runs/<attempt>/worker.pid — o boot do daemon
+          // mata o que sobrou de uma execução anterior que caiu no meio.
+          onSpawn: (pid: number) => {
+            try {
+              mkdirSync(dirname(resultPath), { recursive: true });
+              writeFileSync(join(dirname(resultPath), "worker.pid"), String(pid));
+            } catch {
+              // Só serve para limpeza no boot; nunca impede o attempt.
+            }
           },
-          signal,
-        );
+          ...(entry.candidate.model !== undefined ? { model: entry.candidate.model } : {}),
+        });
       } finally {
         deps.capacity.workerFinished(entry.harness.provider);
         await rm(join(dirname(resultPath), "worker.pid"), { force: true });
@@ -543,6 +615,72 @@ export async function runTask(
             payload: request,
           });
         }
+      }
+
+      // M7: o worker parou para perguntar. Muito acima do teto (ele foi
+      // avisado que não podia mais perguntar e insistiu), a pergunta vira só
+      // nota e a Task fecha normalmente — evita um ciclo pergunta/resposta sem fim.
+      const askedSoFar = await questionsAskedBy(deps, taskId);
+      const hardLimit = questionLimits(feature.repoPath).maxPerTask + 1;
+      if (report?.question && askedSoFar >= hardLimit) {
+        await emitEvent(deps.events, deps.logger, {
+          type: "task.question_ignored",
+          projectId: feature.projectId,
+          featureId: feature.featureId,
+          taskId,
+          payload: {
+            question: report.question.question,
+            reason: `teto de ${hardLimit - 1} perguntas por Task`,
+          },
+        });
+      } else if (report?.question) {
+        const payload: QuestionPayload = {
+          ...report.question,
+          taskId,
+          taskTitle: task.title,
+          role: role.id,
+          attemptId,
+          targetId: entry.candidate.targetId,
+          ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+        };
+        const question = await askQuestion(deps, {
+          featureId: feature.featureId,
+          projectId: feature.projectId,
+          payload,
+        });
+        const freshFeature = await deps.features.getById(feature.featureId);
+        const mode = await effectiveQuestionMode(deps, freshFeature ?? {}, feature.repoPath);
+        const overLimit =
+          (await questionsAskedBy(deps, taskId)) > questionLimits(feature.repoPath).maxPerTask;
+        if (question && (mode !== "ask_human" || overLimit)) {
+          const judge = pickJudge(deps);
+          const resolvedByLead =
+            judge &&
+            (await resolveWithLead(
+              deps,
+              {
+                questionId: question.id,
+                projectId: feature.projectId,
+                objective: feature.objective,
+                payload,
+                reason: overLimit ? "limit" : mode === "auto" ? "auto" : "lead_first",
+                runner: judge.runner,
+                cwd,
+                timeoutMs: deps.judgeTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS,
+                ...(mode === "lead_first" && !overLimit
+                  ? { minConfidence: LEAD_FIRST_MIN_CONFIDENCE }
+                  : {}),
+              },
+              control?.featureSignal() ?? new AbortController().signal,
+            ));
+          if (resolvedByLead) {
+            // Responder não gasta attempt: a rodada seguinte só retoma a sessão.
+            attemptsInRun -= 1;
+            continue;
+          }
+        }
+        await deps.tasks.transitionIf(taskId, ["running"], "awaiting_answer");
+        return { status: "awaiting_answer", reason: payload.question };
       }
 
       if (task.kind === "write") {

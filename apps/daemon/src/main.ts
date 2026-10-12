@@ -24,6 +24,7 @@ import {
   ProviderCapacityRepository,
   QualityResultRepository,
   RoutingDecisionRepository,
+  SettingsRepository,
   TaskAttemptRepository,
   TaskRepository,
   createDb,
@@ -122,6 +123,7 @@ async function main(): Promise<void> {
   const providerCapacity = new ProviderCapacityRepository(db);
   const qualityResults = new QualityResultRepository(db);
   const agentMessages = new AgentMessageRepository(db);
+  const settings = new SettingsRepository(db);
 
   // M5.6–M5.10 — memória do Project. Embeddings locais (ADR 0004); o modelo
   // carrega em segundo plano para a primeira Feature não pagar os ~7s.
@@ -176,6 +178,7 @@ async function main(): Promise<void> {
       maxAttemptsPerTask: providersConfig.maxAttemptsPerTask,
       qualityResults,
       agentMessages,
+      settings,
       ...(taskRouter ? { taskRouter } : {}),
       ...(memoryPort ? { memory: memoryPort } : {}),
       routingPolicy,
@@ -243,6 +246,9 @@ async function main(): Promise<void> {
     qualityResults,
     featureRunner,
     conversations: new ConversationRepository(db),
+    agentMessages,
+    settings,
+    ...(memoryPort ? { memoryPort } : {}),
     ...(memory
       ? {
           memory,

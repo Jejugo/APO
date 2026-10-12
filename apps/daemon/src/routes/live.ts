@@ -41,6 +41,18 @@ export function registerLiveRoutes(app: FastifyInstance, deps: ServerDeps): void
     const tasks = (await deps.tasks.listByFeature(id)).sort((a, b) => a.seq - b.seq);
     const seqById = new Map(tasks.map((task) => [task.id, task.seq]));
     const events = await deps.events.listByFeature(id);
+    const pendingQuestions = (await deps.agentMessages.listPending(id, "question")).map(
+      (message) => ({
+        id: message.id,
+        createdAt: message.createdAt,
+        ...(message.payload as {
+          taskId: string;
+          question: string;
+          options: unknown[];
+          recommended?: string;
+        }),
+      }),
+    );
     return {
       feature: {
         id: feature.id,
@@ -76,6 +88,7 @@ export function registerLiveRoutes(app: FastifyInstance, deps: ServerDeps): void
           };
         }),
       ),
+      questions: pendingQuestions,
       events: events.slice(-12).map((event) => ({
         type: event.type,
         taskId: event.taskId,

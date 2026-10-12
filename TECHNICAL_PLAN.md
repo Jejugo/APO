@@ -622,7 +622,7 @@ Com ele, failover, recovery, paralelismo, conflitos de merge e loops de review s
 
 Convenção: cada fase lista **entregas** (numeradas, cada uma do tamanho de um commit ou PR), **testes obrigatórios** e o **gate de saída**. As estimativas estão em semanas de um dev com agentes e somam o intervalo do ROADMAP.md.
 
-**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → **M7 (perguntas ao humano)** → **M8 (TUI)** → **M9 (interface web)**. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
+**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → M7 ✅ → **M8 (TUI)** → **M9 (interface web)**. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
 
 | Entrega | De | Para | Motivo |
 |---|---|---|---|
@@ -1025,7 +1025,7 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 ---
 
-### M7 — Perguntas ao humano
+### M7 — Perguntas ao humano ✅
 
 **Objetivo:** quando um worker precisa de uma decisão que não é dele (produto, UX, ambiguidade no pedido), ele pergunta — e a pergunta chega **ao usuário**, que responde, ou delega ao Lead ("decida você"). Um interruptor (`auto`) faz o Lead decidir tudo sozinho, para deixar os agentes rodando sem supervisão (ex.: a noite toda).
 **Estimativa:** ~1 semana.
@@ -1080,9 +1080,16 @@ O modo **não** muda a aprovação do PR: Features prontas continuam esperando o
 
 #### Gate de saída
 
-- [ ] Real: um worker pergunta, a pergunta aparece no `apo chat`/`apo watch`, o usuário responde e o worker retoma **a mesma sessão** usando a resposta.
-- [ ] Real: "decida você" → o Lead decide, o motivo aparece no report e no PR.
-- [ ] Real: com `apo questions auto on`, uma Feature com pergunta vai até "Abrir o PR?" sem nenhuma interação humana, e o report lista as decisões tomadas pelo Lead.
+- [x] Real: um worker pergunta, a pergunta chega ao usuário, ele responde e o worker retoma **a mesma sessão** usando a resposta — E2E com Claude Code (Feature de frete): o worker perguntou a política de frete grátis com opções a/b/c e recomendação; a resposta "b, a partir de 20000 centavos" voltou por `--resume` na mesma sessão, que aplicou a regra e passou nos testes.
+- [x] Real: "decida você" → o Lead decide, o motivo aparece no report e no PR — na rodada de correção da mesma Feature, nova pergunta (tarifas); `apo task answer --delegate` → o Lead escolheu e justificou; a Feature chegou a `awaiting_approval` e o report (base do corpo do PR) lista as duas decisões, com autoria.
+- [x] Real: com `apo questions auto on`, uma Feature com pergunta vai até "Abrir o PR?" sem nenhuma interação humana, e o report lista as decisões tomadas pelo Lead — Feature de cupons cujo objetivo dizia "não invente — pergunte": o Lead respondeu na hora, de forma coerente com o objetivo, o review aceitou e a Feature chegou a `awaiting_approval` sem nenhuma interação.
+
+**Achados:**
+- **Lead incoerente no modo `auto` (1ª tentativa do gate 3):** cada pergunta era decidida isolada, o Lead às vezes "adiava" ("ainda não decidido") e o Reviewer, que não conhecia as respostas, marcou as decisões como "inventadas" → `needs_human`. Correções: o Lead recebe as decisões anteriores da Feature e a regra de escolher um caminho concreto e reversível (nunca adiar quando há opção razoável); as respostas (`task.question_answered`) entram no objetivo como requisitos, então verificação de requisitos e review as enxergam.
+- **Limite de sessão do Claude não era reconhecido:** "You've hit your session limit · resets 2:10am" caía como falha comum e o review ia para `needs_human`. O detector passou a reconhecer o texto (e o horário de reset), e o review/verificação de requisitos ganharam failover de capacidade (`withJudge`): quota esgotada → próximo provider.
+- **"Decida você" lia o checkout errado:** o Lead decidia olhando o checkout principal do repo, sem o trabalho da Task. Agora usa a worktree da Task.
+- **Decisões viram memória mesmo se a Feature falhar:** as respostas da 1ª tentativa do gate 3 (Feature que acabou em `needs_human`) apareceram como memória na Feature seguinte do mesmo Project, e o worker teve de arbitrar entre a memória e a Task. É o comportamento do M7.9, mas convém revisar (ex.: gravar só quando a Feature é aprovada) — fica para depois.
+- `--auto-resolve` do `apo run` era lido mas não declarado no Commander; corrigido.
 
 ---
 

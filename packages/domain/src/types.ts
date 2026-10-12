@@ -124,7 +124,9 @@ export type ResolutionSource =
   | "role_preference"
   | "jev"
   | "rule_router"
-  | "global_default";
+  | "global_default"
+  /** M7: retomada da sessão do worker com a resposta à pergunta dele. */
+  | "resume";
 
 export interface ExecutionTarget {
   provider: ProviderId;

@@ -2,6 +2,7 @@
 // PLAN.md. Os dois rodam read-only sobre a worktree de integração, depois que
 // os gates passaram, e devolvem saída estruturada validada por zod.
 
+import type { AgentFailure } from "@apo/harnesses";
 import { execa } from "execa";
 import { z } from "zod";
 import type { AgentRunner } from "./agent-runner.js";
@@ -53,7 +54,7 @@ export async function verifyRequirements(
   runner: AgentRunner,
   context: ReviewContext,
   signal: AbortSignal,
-): Promise<{ checks?: RequirementCheck[]; error?: string }> {
+): Promise<{ checks?: RequirementCheck[]; error?: string; failure?: AgentFailure }> {
   const result = await runner.run(
     "lead",
     {
@@ -74,7 +75,10 @@ export async function verifyRequirements(
     signal,
   );
   if (result.outcome !== "success" || !result.output) {
-    return { error: result.failure?.message ?? "verificação de requisitos falhou" };
+    return {
+      error: result.failure?.message ?? "verificação de requisitos falhou",
+      ...(result.failure ? { failure: result.failure } : {}),
+    };
   }
   return { checks: result.output.requirements };
 }
@@ -83,7 +87,7 @@ export async function reviewIntegration(
   runner: AgentRunner,
   context: ReviewContext,
   signal: AbortSignal,
-): Promise<{ findings?: ReviewFinding[]; error?: string }> {
+): Promise<{ findings?: ReviewFinding[]; error?: string; failure?: AgentFailure }> {
   const result = await runner.run(
     "reviewer",
     {
@@ -105,7 +109,10 @@ export async function reviewIntegration(
     signal,
   );
   if (result.outcome !== "success" || !result.output) {
-    return { error: result.failure?.message ?? "review falhou" };
+    return {
+      error: result.failure?.message ?? "review falhou",
+      ...(result.failure ? { failure: result.failure } : {}),
+    };
   }
   return { findings: result.output.findings };
 }

@@ -22,6 +22,10 @@ export interface WorkerPromptInput {
   memory?: string;
   /** Caminho do WorkerReport — fora do repo (seção 6.3). */
   resultPath?: string;
+  /** M7: o worker ainda pode perguntar nesta Task (abaixo do teto). */
+  canAsk?: boolean;
+  /** M7: resposta a uma pergunta anterior (retomada em attempt novo). */
+  answered?: AnsweredQuestion;
 }
 
 export const WORKER_CONTRACT = [
@@ -31,7 +35,7 @@ export const WORKER_CONTRACT = [
   "- Não peça confirmação: não há humano acompanhando esta sessão.",
 ].join("\n");
 
-function reportInstructions(resultPath: string): string {
+function reportInstructions(resultPath: string, canAsk: boolean): string {
   return [
     `Ao terminar, escreva um JSON em ${resultPath} com o formato:`,
     '{"summary": "o que foi feito, em 1-3 frases", "artifacts": { ... }}',
@@ -39,6 +43,39 @@ function reportInstructions(resultPath: string): string {
     "funções/rotas criadas). Esse arquivo fica fora do repositório: não o commite.",
     "Se descobrir que falta trabalho fora do escopo desta Task para o objetivo da Feature, não o faça:",
     'peça em `"planChangeRequests": [{"title": "...", "description": "...", "reason": "..."}]`.',
+    ...(canAsk
+      ? [
+          "",
+          "Perguntas (M7): se uma decisão de PRODUTO ou UX tiver mais de um caminho razoável e o pedido não",
+          "disser qual (ex.: comportamento visível ao usuário, regra de negócio ambígua), NÃO escolha por conta",
+          "própria: faça o que não depende da resposta, pare, e inclua no JSON:",
+          '"question": {"question": "...", "options": [{"id": "a", "label": "...", "description": "..."}], "recommended": "a", "context": "o que você já fez e o que depende da resposta"}',
+          "Você será retomado nesta mesma sessão com a resposta. Detalhes técnicos (nomes, estrutura interna,",
+          "bibliotecas já usadas no projeto) você decide sozinho e explica no summary — não pergunte sobre eles.",
+        ]
+      : [
+          "",
+          "Não há como perguntar nesta Task: diante de uma decisão ambígua, escolha o caminho mais razoável",
+          "e explique a escolha no summary.",
+        ]),
+  ].join("\n");
+}
+
+export interface AnsweredQuestion {
+  question: string;
+  answer: string;
+  answeredBy: "human" | "lead";
+  rationale?: string | undefined;
+}
+
+/** Bloco da resposta, para retomada (sessão nativa ou attempt novo). */
+export function renderAnswer(answered: AnsweredQuestion): string {
+  return [
+    "## Resposta à sua pergunta",
+    `Pergunta: ${answered.question}`,
+    `Resposta${answered.answeredBy === "lead" ? " (decidida pelo Lead do APO)" : " (do usuário)"}: ${answered.answer}`,
+    ...(answered.rationale ? [`Motivo: ${answered.rationale}`] : []),
+    "Continue a Task a partir de onde parou, seguindo essa resposta. Ao terminar, atualize o relatório.",
   ].join("\n");
 }
 
@@ -80,8 +117,20 @@ export function buildWorkerPrompt(input: WorkerPromptInput): string {
   if (input.handover) {
     sections.push(renderHandoverForPrompt(input.handover));
   }
+  if (input.answered) {
+    sections.push(renderAnswer(input.answered));
+  }
   if (input.resultPath) {
-    sections.push(reportInstructions(input.resultPath));
+    sections.push(reportInstructions(input.resultPath, input.canAsk ?? false));
   }
   return sections.join("\n\n");
+}
+
+/** Prompt da retomada nativa: a sessão já tem todo o contexto; só a resposta e o relatório. */
+export function buildResumePrompt(
+  answered: AnsweredQuestion,
+  resultPath: string,
+  canAsk: boolean,
+): string {
+  return [renderAnswer(answered), reportInstructions(resultPath, canAsk)].join("\n\n");
 }

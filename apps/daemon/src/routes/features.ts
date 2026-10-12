@@ -37,6 +37,8 @@ const createFeatureSchema = z.object({
   // M2.13: segunda chamada depois de um 409 `ask_user`. O cliente devolve o
   // plano recebido no 409 para não replanejar.
   onOverlap: z.enum(["isolate", "absorb"]).optional(),
+  // M7: modo das perguntas só desta Feature (`apo run --auto-resolve` → auto).
+  questionMode: z.enum(["ask_human", "lead_first", "auto"]).optional(),
   absorbInto: z.string().optional(),
   plan: FeaturePlanSchema.optional(),
 });
@@ -319,6 +321,7 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       intent,
       plan,
       ...(preference ? { executionPreference: preference } : {}),
+      ...(body.questionMode ? { questionMode: body.questionMode } : {}),
     });
     if (!feature) {
       reply.code(500);

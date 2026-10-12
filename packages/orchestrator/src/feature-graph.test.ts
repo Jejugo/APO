@@ -20,6 +20,7 @@ import {
   ProjectRepository,
   QualityResultRepository,
   RoutingDecisionRepository,
+  SettingsRepository,
   TaskAttemptRepository,
   TaskRepository,
   createDb,
@@ -43,6 +44,12 @@ import {
 import type { ExecutionTargetEntry } from "./harness-registry.js";
 import type { FeaturePlan } from "./plan.js";
 import { WORKER_CONTRACT } from "./prompt-builder.js";
+import {
+  type QuestionPayload,
+  answerQuestion,
+  interpretHumanAnswer,
+  resolveWithLead,
+} from "./questions.js";
 import { replanFeature } from "./replan.js";
 import { WorkerSlots } from "./worker-slots.js";
 
@@ -163,6 +170,7 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     handovers: HandoverRepository;
     qualityResults: QualityResultRepository;
     agentMessages: AgentMessageRepository;
+    settings: SettingsRepository;
   };
 
   beforeAll(() => {
@@ -177,6 +185,7 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
       handovers: new HandoverRepository(db),
       qualityResults: new QualityResultRepository(db),
       agentMessages: new AgentMessageRepository(db),
+      settings: new SettingsRepository(db),
     };
   });
 
@@ -185,6 +194,9 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
   });
 
   beforeEach(async () => {
+    // O modo global das perguntas fica no banco: um teste que estoura o tempo
+    // não pode deixar "auto" ligado para os seguintes.
+    await repos.settings.delete("questions.mode");
     repoPath = await mkdtemp(join(tmpdir(), "apo-engine-repo-"));
     worktreesRoot = await mkdtemp(join(tmpdir(), "apo-engine-worktrees-"));
     await execa("git", ["init", "-b", "main"], { cwd: repoPath });
@@ -239,6 +251,7 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
       maxAttemptsPerTask: 3,
       qualityResults: repos.qualityResults,
       agentMessages: repos.agentMessages,
+      settings: repos.settings,
       pullRequests: prs,
       judgeTimeoutMs: 10_000,
       attemptLogPath: (attemptId) => join(worktreesRoot, "logs", `${attemptId}.log`),
@@ -1323,5 +1336,257 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     expect(existsSync(join(repoPath, "mergeado.txt"))).toBe(true);
     const events = (await repos.events.listByFeature(feature.id)).map((event) => event.type);
     expect(events).toContain("repo.synced");
+  });
+
+  // --- M7 ------------------------------------------------------------------
+
+  const FILTER_QUESTION = {
+    question: "O filtro aceita várias categorias ao mesmo tempo?",
+    options: [
+      { id: "a", label: "Uma por vez" },
+      { id: "b", label: "Várias, com checkboxes" },
+    ],
+    recommended: "b",
+    context: "API pronta; a UI depende da resposta.",
+  };
+
+  /** Worker de UI que pergunta na 1ª vez e conclui quando recebe a resposta. */
+  function askingWorker() {
+    return byTitle({
+      api: { writeFile: { path: "api.txt", content: "api" }, commit: "feat: api" },
+      "ui*": undefined as unknown as FakeHarnessStep,
+    });
+  }
+
+  function questionTarget(judge: Responder = approvingJudge) {
+    return fakeTarget(
+      "fake-a",
+      "anthropic",
+      (attemptInput) => {
+        if (attemptInput.prompt.includes("Resposta à sua pergunta")) {
+          return {
+            writeFile: { path: "ui.txt", content: "ui" },
+            commit: "feat: ui",
+            report: { summary: "ui feita" },
+          };
+        }
+        if (attemptInput.prompt.includes("Task: ui")) {
+          return { report: { summary: "parei para perguntar", question: FILTER_QUESTION } };
+        }
+        if (attemptInput.prompt.includes("Task: e2e")) {
+          return { writeFile: { path: "e2e.txt", content: "e2e" }, commit: "test: e2e" };
+        }
+        return askingWorker()(attemptInput);
+      },
+      judge,
+    );
+  }
+
+  const leadDecides =
+    (confidence: number): Responder =>
+    (input) =>
+      input.prompt.includes("Um worker parou para perguntar")
+        ? {
+            succeed: {
+              structuredOutput: {
+                optionId: "b",
+                answer: "b) Várias, com checkboxes",
+                rationale: "segue a recomendação",
+                confidence,
+              },
+            },
+          }
+        : approvingJudge(input);
+
+  async function waitForStatus(taskTitle: string, featureId: string, status: string) {
+    for (let i = 0; i < 100; i++) {
+      const task = (await repos.tasks.listByFeature(featureId)).find(
+        (candidate) => candidate.title === taskTitle,
+      );
+      if (task?.status === status) return task;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`Task ${taskTitle} não chegou a ${status}`);
+  }
+
+  async function pendingQuestion(featureId: string) {
+    const [question] = await repos.agentMessages.listPending(featureId, "question");
+    if (!question) throw new Error("nenhuma pergunta pendente");
+    return question;
+  }
+
+  it("M7: worker pergunta → Task espera, o resto segue → resposta humana retoma a MESMA sessão → Feature conclui", async () => {
+    const target = questionTarget();
+    const { feature, deps, input, prs } = await setup({
+      targets: [target],
+      plan: planOf(
+        { key: "t1", title: "api" },
+        { key: "t2", title: "ui" },
+        { key: "t3", title: "e2e", dependsOn: ["t2"] },
+      ),
+    });
+    const running = run(deps, input);
+    const ui = await waitForStatus("ui", feature.id, "awaiting_answer");
+    await waitForStatus("api", feature.id, "completed");
+    expect(
+      (await repos.tasks.listByFeature(feature.id)).find((task) => task.title === "e2e")?.status,
+    ).toBe("ready");
+
+    const question = await pendingQuestion(feature.id);
+    const payload = question.payload as QuestionPayload;
+    expect(payload).toMatchObject({
+      question: FILTER_QUESTION.question,
+      recommended: "b",
+      taskId: ui.id,
+    });
+    const human = interpretHumanAnswer(payload, "b");
+    await answerQuestion(deps, {
+      questionId: question.id,
+      projectId: feature.projectId,
+      resolution: { ...human, answeredBy: "human", reason: "human" },
+    });
+    await running;
+
+    const { feature: done, tasks } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    expect(tasks.every((task) => task.status === "completed")).toBe(true);
+    const harness = target.harness as FakeHarness;
+    expect(harness.resumedSessions).toEqual([payload.sessionId]);
+    expect(
+      harness.receivedPrompts.some((prompt) =>
+        prompt.includes("Resposta (do usuário): b) Várias, com checkboxes"),
+      ),
+    ).toBe(true);
+    expect(prs.created[0]?.body).toContain("## Decisões tomadas");
+    expect(prs.created[0]?.body).toContain("(você)");
+  }, 60_000);
+
+  it("M7: modo auto na Feature → o Lead decide na hora, sem espera humana, e registra o motivo", async () => {
+    const target = questionTarget(leadDecides(0.9));
+    const { feature, deps, input, prs } = await setup({
+      targets: [target],
+      plan: planOf({ key: "t1", title: "ui" }),
+    });
+    await repos.features.update(feature.id, { questionMode: "auto" });
+    await run(deps, input);
+
+    const { feature: done } = await finalState(feature.id);
+    expect(done?.status).toBe("completed");
+    const [message] = await repos.agentMessages.listByFeature(feature.id);
+    expect(message).toMatchObject({
+      status: "auto",
+      resolution: { answeredBy: "lead", reason: "auto", rationale: "segue a recomendação" },
+    });
+    expect(prs.created[0]?.body).toContain("Lead (você ausente)");
+  }, 60_000);
+
+  it("M7: modo global auto ligado DEPOIS da pergunta → a pendente é resolvida sem humano", async () => {
+    const target = questionTarget(leadDecides(0.9));
+    const { feature, deps, input } = await setup({
+      targets: [target],
+      plan: planOf({ key: "t1", title: "ui" }),
+    });
+    const running = run(deps, input);
+    await waitForStatus("ui", feature.id, "awaiting_answer");
+    await repos.settings.set("questions.mode", "auto");
+    try {
+      await running;
+    } finally {
+      await repos.settings.delete("questions.mode");
+    }
+    expect((await finalState(feature.id)).feature?.status).toBe("completed");
+    const [message] = await repos.agentMessages.listByFeature(feature.id);
+    expect(message?.status).toBe("auto");
+  }, 60_000);
+
+  it("M7: lead_first com confiança baixa → a pergunta vai para o humano; 'decida você' delega ao Lead", async () => {
+    let calls = 0;
+    const judge: Responder = (input) => {
+      if (input.prompt.includes("Um worker parou para perguntar")) {
+        calls += 1;
+        const confidence = calls === 1 ? 0.3 : 0.6;
+        return {
+          succeed: {
+            structuredOutput: {
+              optionId: "a",
+              answer: "a) Uma por vez",
+              rationale: "mais simples",
+              confidence,
+            },
+          },
+        };
+      }
+      return approvingJudge(input);
+    };
+    const target = questionTarget(judge);
+    const { feature, deps, input, prs } = await setup({
+      targets: [target],
+      plan: planOf({ key: "t1", title: "ui" }),
+    });
+    await repos.features.update(feature.id, { questionMode: "lead_first" });
+    const running = run(deps, input);
+    await waitForStatus("ui", feature.id, "awaiting_answer");
+    const question = await pendingQuestion(feature.id);
+    // "decida você": o Lead decide mesmo com confiança média.
+    const lead = deps.targets[0]?.harness;
+    if (!lead) throw new Error("sem harness");
+    await resolveWithLead(
+      deps,
+      {
+        questionId: question.id,
+        projectId: feature.projectId,
+        objective: input.objective,
+        payload: question.payload as QuestionPayload,
+        reason: "delegated",
+        runner: new AgentRunnerImpl(lead),
+        cwd: repoPath,
+        timeoutMs: 5_000,
+      },
+      new AbortController().signal,
+    );
+    await running;
+    expect((await finalState(feature.id)).feature?.status).toBe("completed");
+    expect(prs.created[0]?.body).toContain("Lead (delegado por você): mais simples");
+  }, 60_000);
+
+  it("M7: acima do teto de perguntas por Task, o Lead decide (reason limit)", async () => {
+    projectYaml("questions:\n  maxPerTask: 0\n");
+    const target = questionTarget(leadDecides(0.2));
+    const { feature, deps, input } = await setup({
+      targets: [target],
+      plan: planOf({ key: "t1", title: "ui" }),
+    });
+    await run(deps, input);
+    expect((await finalState(feature.id)).feature?.status).toBe("completed");
+    const [message] = await repos.agentMessages.listByFeature(feature.id);
+    expect(message).toMatchObject({ status: "auto", resolution: { reason: "limit" } });
+    expect((target.harness as FakeHarness).receivedPrompts[0]).toContain(
+      "Não há como perguntar nesta Task",
+    );
+  }, 60_000);
+
+  it("Review: o Reviewer bate limite de sessão → o review vai para o outro provider (antes: needs_human)", async () => {
+    const quotaReviewer: Responder = (input) =>
+      input.prompt.includes("Você é o Reviewer")
+        ? { fail: { kind: "quota_exhausted" } }
+        : approvingJudge(input);
+    const { feature, deps, input, capacity } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", [
+          { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+        ]),
+        // Preferido para o review (provider diferente de quem implementou), mas sem quota.
+        fakeTarget("fake-b", "openai", [], quotaReviewer),
+      ],
+      featurePreference: { mode: "forced", provider: "anthropic" },
+    });
+    await run(deps, input);
+
+    expect((await finalState(feature.id)).feature?.status).toBe("completed");
+    expect(capacity.get("openai").availability).toBe("exhausted");
+    const review = (await repos.qualityResults.listByFeature(feature.id)).find(
+      (row) => row.gate === "review",
+    );
+    expect((review?.details as { target: string }).target).toBe("fake-a");
   });
 });

@@ -44,7 +44,7 @@ E adiando:
 
 ## 3. Marcos
 
-> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → **M7 (perguntas ao humano)** → **M8 (TUI)** → **M9 (interface web)**.
+> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → M7 ✅ → **M8 (TUI)** → **M9 (interface web)**.
 >
 > O failover entre providers (M3) passa na frente do DAG multi-task (M2). É o diferencial que nenhum runtime externo de agent teams oferece, e funciona já em cima do graph do M1, que na prática é o `SingleAgentEngine` (ver seção 4.7). O M2 fica congelado até um triage rápido decidir se o `ApoNativeEngine` precisa mesmo da infraestrutura de times própria ou se parte dela pode vir de um runtime externo.
 >
@@ -152,7 +152,7 @@ E adiando:
 
 ---
 
-### M7 — Perguntas ao humano (~1 semana)
+### M7 — Perguntas ao humano (~1 semana) ✅
 
 Quando um worker precisa de uma decisão que não é dele (produto, UX, pedido ambíguo), ele pergunta — e a pergunta chega a você, com opções e a recomendação do worker. Você responde, ou diz "decida você" e o Lead decide registrando o motivo. Absorve as perguntas bloqueantes adiadas do M2 (M2.19–M2.21).
 

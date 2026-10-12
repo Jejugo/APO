@@ -5,11 +5,15 @@
 // classificada como "crash" e por isso nunca disparava failover:
 //   "You’ve hit your usage limit. Upgrade to Pro (...), visit (...) to purchase
 //    more credits or try again at 3:58 PM."
+// Fixture real (Claude Code, review do E2E do M7), antes classificada como crash:
+//   "You've hit your session limit · resets 2:10am (America/Sao_Paulo)"
 
 import type { AgentFailure } from "./types.js";
 
 const QUOTA_PATTERNS = [
   /usage limit/i,
+  /hit your (?:\w+ )?limit/i,
+  /(?:session|weekly|daily|monthly) limit/i,
   /quota (?:exceeded|exhausted)/i,
   /out of credits/i,
   /purchase more credits/i,
@@ -52,10 +56,13 @@ export function parseResetAt(text: string, now: Date = new Date()): Date | undef
     }
   }
 
-  const at = /try again at (\d{1,2}):(\d{2})\s*(AM|PM)?/i.exec(text);
+  // "try again at 3:58 PM" (Codex) e "resets 2:10am" / "resets 3pm" (Claude Code).
+  const at =
+    /try again at (\d{1,2}):(\d{2})\s*(AM|PM)?/i.exec(text) ??
+    /resets?(?: at)? (\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i.exec(text);
   if (at) {
     const hours = to24h(Number(at[1]), at[3]);
-    const minutes = Number(at[2]);
+    const minutes = Number(at[2] ?? 0);
     const reset = new Date(now);
     reset.setHours(hours, minutes, 0, 0);
     if (reset.getTime() <= now.getTime()) {

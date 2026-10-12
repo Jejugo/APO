@@ -17,6 +17,9 @@ export const LEAD_ACTIONS = [
   "approve_feature",
   "reject_feature",
   "explain_routing",
+  "answer_question",
+  "delegate_question",
+  "set_question_mode",
 ] as const;
 
 export const LeadActionSchema = z.object({
@@ -33,6 +36,10 @@ export const LeadActionSchema = z.object({
   provider: z.enum(["anthropic", "openai", "google"]).optional(),
   harness: z.string().optional(),
   onOverlap: z.enum(["isolate", "absorb"]).optional(),
+  /** M7: resposta a uma pergunta de worker (opção como "b" ou texto livre). */
+  answer: z.string().optional(),
+  /** M7: modo das perguntas; "inherit" volta ao padrão (desliga o global ou o da Feature). */
+  questionMode: z.enum(["ask_human", "lead_first", "auto", "inherit"]).optional(),
 });
 export type LeadAction = z.infer<typeof LeadActionSchema>;
 
@@ -46,6 +53,16 @@ export interface ChatContext {
     tasks?: Array<{ id: string; seq: number; title: string; status: string }>;
   }>;
   targets: Array<{ targetId: string; provider: string; harness: string }>;
+  /** M7: perguntas de workers esperando resposta. */
+  pendingQuestions?: Array<{
+    taskId: string;
+    taskTitle: string;
+    role: string;
+    question: string;
+    options: Array<{ id: string; label: string }>;
+    recommended?: string | undefined;
+  }>;
+  questionModeGlobal?: string | null;
   summary?: string | null;
   history: Array<{ role: string; content: string }>;
 }
@@ -69,6 +86,21 @@ function renderContext(context: ChatContext): string {
   return [
     `Project: ${context.projectName}`,
     `Features (mais recentes primeiro):\n${features}`,
+    ...(context.pendingQuestions && context.pendingQuestions.length > 0
+      ? [
+          `Perguntas de workers esperando resposta:\n${context.pendingQuestions
+            .map(
+              (question) =>
+                `- task ${question.taskId} (${question.taskTitle}, ${question.role}): ${question.question} ${question.options
+                  .map((option) => `[${option.id}) ${option.label}]`)
+                  .join(
+                    " ",
+                  )}${question.recommended ? ` (recomendado: ${question.recommended})` : ""}`,
+            )
+            .join("\n")}`,
+        ]
+      : []),
+    `Modo global das perguntas: ${context.questionModeGlobal ?? "padrão do projeto (ask_human)"}`,
     `Targets de execução: ${context.targets.map((target) => `${target.targetId} (${target.provider}/${target.harness})`).join(", ")}`,
     context.summary ? `Resumo da conversa anterior:\n${context.summary}` : "",
     history.length > 0 ? `Conversa recente:\n${history.join("\n")}` : "",
@@ -89,6 +121,9 @@ export const LEAD_CHAT_INSTRUCTIONS = [
   "- approve_feature: o usuário aprovou abrir o PR de uma Feature em awaiting_approval (`featureId`).",
   "- reject_feature: o usuário pediu ajustes numa Feature em awaiting_approval (`featureId`, `reason` com o que mudar).",
   "- explain_routing: explicar por que uma Task rodou onde rodou (`taskId`).",
+  '- answer_question: o usuário respondeu a pergunta de um worker (`taskId`, `answer` com a opção, ex. "b", ou texto livre).',
+  '- delegate_question: o usuário disse "decida você" para a pergunta de um worker (`taskId`); o Lead do APO decide e registra o motivo.',
+  '- set_question_mode: mudar o modo das perguntas (`questionMode`: ask_human = perguntar ao usuário, lead_first = o Lead tenta antes, auto = o Lead decide tudo, inherit = voltar ao padrão). Com `featureId` vale só para a Feature; sem, é o modo global (ex.: "vou dormir, decide tudo" → auto; "voltei" → inherit).',
   "Regras: use só ids que aparecem no contexto. Nunca aprove, rejeite ou cancele sem o usuário ter pedido explicitamente. Na dúvida sobre qual Feature/Task, use answer e pergunte. `reply` é curto, em português, e diz o que vai acontecer.",
 ].join("\n");
 

@@ -56,6 +56,24 @@ export function registerFeatureCommands(program: Command): void {
     });
 
   feature
+    .command("questions <id> <modo>")
+    .description("Modo das perguntas só desta Feature: ask_human | lead_first | auto | default")
+    .action(async (id: string, mode: string) => {
+      if (!["ask_human", "lead_first", "auto", "default"].includes(mode)) {
+        console.error("Use: ask_human, lead_first, auto ou default.");
+        process.exitCode = 1;
+        return;
+      }
+      await daemonRequest(`/features/${id}/questions`, {
+        method: "POST",
+        body: { mode: mode === "default" ? null : mode },
+      });
+      console.log(
+        `Perguntas desta Feature: ${mode === "default" ? "modo herdado (global/projeto)" : mode}.`,
+      );
+    });
+
+  feature
     .command("report <id>")
     .description("Quality gates, requisitos, review e resumo de entrega (M4)")
     .action(async (id: string) => {
@@ -84,6 +102,40 @@ export function registerFeatureCommands(program: Command): void {
         console.log(
           `\nFeature pronta. Abrir o Pull Request?  apo approve ${id}  |  apo reject ${id} --reason "..."`,
         );
+      }
+      const decisions = (
+        await daemonRequest<
+          Array<{
+            question: string;
+            status: string;
+            resolution: {
+              answer: string;
+              answeredBy: string;
+              reason: string;
+              rationale?: string;
+            } | null;
+          }>
+        >(`/features/${id}/questions`)
+      ).filter((question) => question.resolution || question.status === "pending");
+      if (decisions.length > 0) {
+        console.log("\nPerguntas dos workers:");
+        for (const decision of decisions) {
+          if (!decision.resolution) {
+            console.log(`  ❓ ${decision.question}  (esperando resposta: apo questions list)`);
+            continue;
+          }
+          const who =
+            decision.resolution.answeredBy === "human"
+              ? "você"
+              : decision.resolution.reason === "delegated"
+                ? "Lead, delegado por você"
+                : decision.resolution.reason === "timeout"
+                  ? "Lead, prazo vencido"
+                  : "Lead, você ausente";
+          console.log(
+            `  • ${decision.question}\n    → ${decision.resolution.answer} (${who}${decision.resolution.rationale ? `: ${decision.resolution.rationale}` : ""})`,
+          );
+        }
       }
       if (report.deliverySummary) console.log(`\n${report.deliverySummary}`);
     });

@@ -23,6 +23,17 @@ export const ProjectConfigSchema = z.object({
       requirePrApproval: z.boolean().default(true),
     })
     .default({}),
+  // M7 — perguntas dos workers. `mode`: ask_human (pergunta ao usuário),
+  // lead_first (o Lead tenta antes) ou auto (o Lead sempre decide). O modo
+  // global (`apo questions auto on|off`) e o da Feature têm prioridade.
+  questions: z
+    .object({
+      mode: z.enum(["ask_human", "lead_first", "auto"]).optional(),
+      maxPerTask: z.number().int().min(0).default(2),
+      /** Sem resposta depois disso, o Lead decide. Ausente = espera para sempre. */
+      timeoutHours: z.number().positive().optional(),
+    })
+    .default({}),
   // M4.3/M4.5 — finding a partir desta severidade bloqueia a entrega e vira
   // Task corretiva; acima de maxFixIterations rodadas de correção → needs_human.
   review: z

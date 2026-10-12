@@ -149,7 +149,11 @@ export class FakeHarness implements AgentHarness {
     };
   }
 
+  /** Sessões retomadas via `resume` (M7: prova que a resposta voltou à mesma sessão). */
+  readonly resumedSessions: string[] = [];
+
   resume(input: ResumeExecutionInput, signal: AbortSignal): Promise<AgentExecutionResult> {
+    this.resumedSessions.push(input.sessionId);
     return this.execute(input, signal);
   }
 }

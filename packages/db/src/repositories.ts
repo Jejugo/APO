@@ -13,6 +13,7 @@ import {
   providerCapacity,
   qualityResults,
   routingDecisions,
+  settings,
   type taskAttemptStatusEnum,
   taskAttempts,
   type taskStatusEnum,
@@ -86,6 +87,7 @@ export class FeatureRepository {
       fixIteration: number;
       prUrl: string;
       deliverySummary: string;
+      questionMode: string | null;
     }>,
   ) {
     return this.db
@@ -375,6 +377,30 @@ export class QualityResultRepository {
   }
 }
 
+export class SettingsRepository {
+  constructor(private readonly db: Db) {}
+
+  get<T>(key: string): Promise<T | undefined> {
+    return this.db
+      .select()
+      .from(settings)
+      .where(eq(settings.key, key))
+      .then(([row]) => row?.value as T | undefined);
+  }
+
+  set(key: string, value: unknown) {
+    return this.db
+      .insert(settings)
+      .values({ key, value, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: new Date() } });
+  }
+
+  /** Remove a chave (volta ao valor herdado). */
+  delete(key: string) {
+    return this.db.delete(settings).where(eq(settings.key, key));
+  }
+}
+
 export class AgentMessageRepository {
   constructor(private readonly db: Db) {}
 
@@ -406,6 +432,40 @@ export class AgentMessageRepository {
       .from(agentMessages)
       .where(eq(agentMessages.featureId, featureId))
       .orderBy(asc(agentMessages.createdAt));
+  }
+
+  getById(id: string) {
+    return this.db
+      .select()
+      .from(agentMessages)
+      .where(eq(agentMessages.id, id))
+      .then(([row]) => row);
+  }
+
+  listByTask(taskId: string, type: string) {
+    return this.db
+      .select()
+      .from(agentMessages)
+      .where(and(eq(agentMessages.fromTaskId, taskId), eq(agentMessages.type, type)))
+      .orderBy(asc(agentMessages.createdAt));
+  }
+
+  listByStatus(type: string, status: string) {
+    return this.db
+      .select()
+      .from(agentMessages)
+      .where(and(eq(agentMessages.type, type), eq(agentMessages.status, status)))
+      .orderBy(asc(agentMessages.createdAt));
+  }
+
+  /** Transição atômica de status (ex.: pending → answered); undefined se outro chegou antes. */
+  resolveIf(id: string, from: string, status: string, resolution: unknown) {
+    return this.db
+      .update(agentMessages)
+      .set({ status, resolution, resolvedAt: new Date() })
+      .where(and(eq(agentMessages.id, id), eq(agentMessages.status, from)))
+      .returning()
+      .then(([row]) => row);
   }
 
   resolve(id: string, status: "accepted" | "rejected" | "escalated", resolution: unknown) {

@@ -1,4 +1,5 @@
 import type {
+  AgentMessageRepository,
   ConversationRepository,
   EventRepository,
   FeatureRepository,
@@ -7,12 +8,13 @@ import type {
   ProjectRepository,
   QualityResultRepository,
   RoutingDecisionRepository,
+  SettingsRepository,
   TaskAttemptRepository,
   TaskRepository,
 } from "@apo/db";
 import type { MemoryService, RetrieveOptions } from "@apo/memory";
 import type { Logger } from "@apo/observability";
-import type { TargetRegistry } from "@apo/orchestrator";
+import type { MemoryPort, TargetRegistry } from "@apo/orchestrator";
 import type { CapacityMonitor, RoutingPolicy } from "@apo/routing";
 import type { FeatureRunner } from "./feature-runner.js";
 
@@ -28,6 +30,11 @@ export interface ServerDeps {
   handovers: HandoverRepository;
   qualityResults: QualityResultRepository;
   featureRunner: FeatureRunner;
+  /** M7: perguntas (agent_messages) e o modo global (settings). */
+  agentMessages: AgentMessageRepository;
+  settings: SettingsRepository;
+  /** M7: grava a decisão como memória do Project. */
+  memoryPort?: MemoryPort;
   conversations: ConversationRepository;
   /** M5: ausente quando `memory.enabled: false`. */
   memory?: MemoryService;

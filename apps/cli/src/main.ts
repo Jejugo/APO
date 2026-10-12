@@ -9,6 +9,7 @@ import { registerLogsCommand } from "./commands/logs.js";
 import { registerMemoryCommands } from "./commands/memory.js";
 import { registerProjectCommands } from "./commands/project.js";
 import { registerProvidersCommand } from "./commands/providers.js";
+import { registerQuestionCommands } from "./commands/questions.js";
 import { registerRoleCommands } from "./commands/role.js";
 import { registerRunCommand } from "./commands/run.js";
 import { registerStatusCommand } from "./commands/status.js";
@@ -23,6 +24,7 @@ registerInitCommand(program);
 registerDaemonCommands(program);
 registerProjectCommands(program);
 registerMemoryCommands(program);
+registerQuestionCommands(program);
 registerRunCommand(program);
 registerChatCommand(program);
 // Atalho de `apo feature watch` — o comando mais usado no dia a dia.

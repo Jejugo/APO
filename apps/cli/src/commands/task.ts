@@ -94,6 +94,33 @@ export function registerTaskCommands(program: Command): void {
     });
 
   task
+    .command("answer <id> [resposta...]")
+    .description(
+      "Responde a pergunta do worker: a opção (ex.: b) ou texto livre; --delegate deixa o Lead decidir",
+    )
+    .option("--delegate", "decida você: o Lead do APO escolhe e registra o motivo")
+    .action(async (id: string, words: string[], options: { delegate?: boolean }) => {
+      const answer = words.join(" ").trim();
+      if (!options.delegate && !answer) {
+        console.error("Informe a resposta (ex.: apo task answer <task> b) ou use --delegate.");
+        process.exitCode = 1;
+        return;
+      }
+      const result = await daemonRequest<{ answeredBy: string; answer: string }>(
+        `/tasks/${id}/answer`,
+        {
+          method: "POST",
+          body: options.delegate ? { delegate: true } : { answer },
+        },
+      );
+      console.log(
+        result.answeredBy === "lead"
+          ? `O Lead decidiu: ${result.answer.replace(/\.+$/, "")}. O worker retoma com essa decisão.`
+          : `Resposta registrada: ${result.answer.replace(/\.+$/, "")}. O worker retoma a partir dela.`,
+      );
+    });
+
+  task
     .command("tail <id>")
     .description(
       "O que o agente da Task está fazendo (comandos, arquivos, mensagens); -f acompanha ao vivo",

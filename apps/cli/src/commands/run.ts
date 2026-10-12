@@ -13,6 +13,7 @@ interface RunOptions {
   prefer?: string;
   as?: "question" | "bugfix" | "feature";
   onOverlap?: "isolate" | "absorb";
+  autoResolve?: boolean;
 }
 
 type RunResponse =
@@ -72,6 +73,7 @@ export function registerRunCommand(program: Command): void {
       "--on-overlap <decision>",
       "se houver Feature ativa sobreposta: isolate | absorb (sem perguntar)",
     )
+    .option("--auto-resolve", "o Lead responde as perguntas dos workers desta Feature (modo auto)")
     .action(async (objective: string, options: RunOptions) => {
       if (options.harness && options.prefer) {
         console.error("Use --harness ou --prefer, não os dois.");
@@ -84,6 +86,7 @@ export function registerRunCommand(program: Command): void {
         ...(options.harness !== undefined ? { harness: options.harness } : {}),
         ...(options.prefer !== undefined ? { prefer: options.prefer } : {}),
         ...(options.as !== undefined ? { as: options.as } : {}),
+        ...(options.autoResolve ? { questionMode: "auto" } : {}),
       };
       let response: RunResponse;
       try {

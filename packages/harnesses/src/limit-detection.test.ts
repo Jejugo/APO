@@ -80,4 +80,19 @@ describe("buildWorkerEnvironment", () => {
     });
     expect(env).toEqual({ HOME: "/h", NPM_TOKEN: "ok" });
   });
+
+  it("Claude Code: 'session limit · resets 2:10am' → quota_exhausted com o reset na próxima 02:10", () => {
+    const now = new Date(2026, 9, 12, 0, 1, 58);
+    const failure = detectLimitFailure(
+      "You've hit your session limit · resets 2:10am (America/Sao_Paulo)",
+      now,
+    );
+    expect(failure?.kind).toBe("quota_exhausted");
+    expect(failure?.resetAt).toEqual(new Date(2026, 9, 12, 2, 10, 0, 0));
+    const later = detectLimitFailure(
+      "You've hit your weekly limit · resets 3pm",
+      new Date(2026, 9, 12, 16, 0),
+    );
+    expect(later?.resetAt).toEqual(new Date(2026, 9, 13, 15, 0, 0, 0));
+  });
 });

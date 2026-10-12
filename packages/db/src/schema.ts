@@ -126,6 +126,8 @@ export const features = pgTable("features", {
   prUrl: text("pr_url"),
   /** M4.7: resumo de entrega (mudanças, gates, review) — vira o corpo do PR. */
   deliverySummary: text("delivery_summary"),
+  /** M7: modo das perguntas só desta Feature (ask_human | lead_first | auto); null = herda. */
+  questionMode: text("question_mode"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -346,3 +348,11 @@ export const conversationMessages = pgTable(
   },
   (table) => [index("conversation_messages_thread_idx").on(table.threadId, table.createdAt)],
 );
+
+// M7 — configurações de runtime do daemon (ex.: modo global das perguntas,
+// ligado/desligado com `apo questions auto on|off` sem editar arquivo).
+export const settings = pgTable("settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

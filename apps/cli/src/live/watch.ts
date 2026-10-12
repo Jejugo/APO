@@ -32,6 +32,13 @@ interface Board {
     } | null;
   }>;
   events: Array<{ type: string; payload: unknown; createdAt: string }>;
+  questions?: Array<{
+    id: string;
+    taskId: string;
+    question: string;
+    options: Array<{ id: string; label: string }>;
+    recommended?: string;
+  }>;
 }
 
 const REFRESH_MS = 2_000;
@@ -46,6 +53,7 @@ const ICON: Record<string, string> = {
   failed: c.red("✗"),
   cancelled: c.dim("⊘"),
   needs_human: c.red("!"),
+  awaiting_answer: c.magenta("?"),
 };
 
 function elapsed(from: string, to?: string | null): string {
@@ -72,15 +80,18 @@ function summarizeEvent(event: Board["events"][number]): string {
           .join(" ")
       : event.type === "review.completed"
         ? `${payload.findings ?? 0} finding(s), ${payload.blocking ?? 0} bloqueante(s) — ${payload.reviewer ?? ""}`
-        : event.type === "attempt.started"
-          ? `${payload.target ?? ""} (${payload.role ?? ""})`
-          : event.type === "wave.started"
-            ? ((payload.tasks as string[] | undefined) ?? []).join(" | ")
-            : typeof payload.reason === "string"
-              ? payload.reason
-              : typeof payload.url === "string"
-                ? payload.url
-                : "";
+        : event.type === "task.question" || event.type === "task.question_answered"
+          ? String(payload.question ?? "") +
+            (payload.answer ? ` → ${payload.answer} (${payload.answeredBy})` : "")
+          : event.type === "attempt.started"
+            ? `${payload.target ?? ""} (${payload.role ?? ""})`
+            : event.type === "wave.started"
+              ? ((payload.tasks as string[] | undefined) ?? []).join(" | ")
+              : typeof payload.reason === "string"
+                ? payload.reason
+                : typeof payload.url === "string"
+                  ? payload.url
+                  : "";
   return `${c.dim(time)} ${event.type}${detail ? c.dim(` ${detail}`) : ""}`;
 }
 
@@ -110,6 +121,15 @@ function render(board: Board, input: string): string {
     const text = ` ${summarizeEvent(event)}`;
     const visible = stripAnsi(text);
     lines.push(visible.length > width ? `${visible.slice(0, width - 1)}…` : text);
+  }
+  for (const question of board.questions ?? []) {
+    const task = board.tasks.find((candidate) => candidate.id === question.taskId);
+    lines.push(
+      "",
+      c.magenta(`❓ Task #${task?.seq ?? "?"} pergunta: ${question.question}`),
+      `   ${question.options.map((option) => `${option.id}) ${option.label}${option.id === question.recommended ? " ←" : ""}`).join("   ")}`,
+      c.dim(`   apo task answer ${question.taskId} <opção>   |   --delegate (decida você)`),
+    );
   }
   if (f.status === "awaiting_approval") {
     lines.push(

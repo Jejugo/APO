@@ -47,11 +47,19 @@ import {
 } from "./completion.js";
 import { GhPullRequestCreator, buildDeliverySummary } from "./delivery.js";
 import { candidatesOf, findTarget } from "./harness-registry.js";
-import { pickJudge } from "./judge.js";
+import { pickJudge, withJudge } from "./judge.js";
 import { distillMemories } from "./memory-writer.js";
 import { PLAN_CHANGE_REQUEST, PlanChangeRequestSchema, decidePlanChange } from "./plan-changes.js";
 import { type FeaturePlan, FeaturePlanSchema, singleTaskPlan, validatePlan } from "./plan.js";
 import { type GateResult, QUALITY_GATES, type QualityGate, runQualityGates } from "./quality.js";
+import {
+  QUESTION,
+  type QuestionPayload,
+  type QuestionResolution,
+  effectiveQuestionMode,
+  questionLimits,
+  resolveWithLead,
+} from "./questions.js";
 import { integrationDiff, reviewIntegration, verifyRequirements } from "./review.js";
 import {
   type EngineDeps,
@@ -109,6 +117,8 @@ const TERMINAL_TASK = new Set(["completed", "failed", "cancelled", "needs_human"
 const DEFAULT_JUDGE_TIMEOUT_MS = 15 * 60_000;
 const HELD_POLL_MS = 500;
 const HELD_TIMEOUT_MS = 20 * 60_000;
+/** M7: com pergunta pendente, de quanto em quanto tempo checar modo `auto`/prazo. */
+const QUESTION_CHECK_MS = 5_000;
 
 /**
  * Teto de passos por invocação. O padrão do LangGraph (25) estoura numa
@@ -244,6 +254,20 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
       if (event.type === "feature.requirement_updated" && typeof payload.change === "string") {
         additions.push(`(requisito alterado) ${payload.change}`);
       }
+      // M7: respostas a perguntas dos workers são requisitos — o review não
+      // pode tratar como "inventado" o que foi decidido (pelo usuário ou pelo
+      // Lead em nome dele).
+      if (
+        event.type === "task.question_answered" &&
+        typeof payload.question === "string" &&
+        typeof payload.answer === "string"
+      ) {
+        const who =
+          payload.answeredBy === "lead"
+            ? "decidido pelo Lead em nome do usuário"
+            : "decidido pelo usuário";
+        additions.push(`(${who}) ${payload.question} → ${payload.answer}`);
+      }
       if (
         event.type === "feature.request_absorbed" &&
         typeof payload.originalObjective === "string"
@@ -254,6 +278,43 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
     return additions.length === 0
       ? state.objective
       : `${state.objective}\n\nRequisitos adicionados depois (também fazem parte do objetivo):\n${additions.map((item) => `- ${item}`).join("\n")}`;
+  }
+
+  /**
+   * M7: perguntas pendentes que o Lead deve resolver agora — modo `auto`
+   * ligado depois de a pergunta chegar, ou prazo (`questions.timeoutHours`) vencido.
+   */
+  async function autoResolveQuestions(state: typeof FeatureGraphState.State, signal: AbortSignal) {
+    const pending = await deps.agentMessages.listPending(state.featureId, QUESTION);
+    if (pending.length === 0) return;
+    const feature = await deps.features.getById(state.featureId);
+    const mode = await effectiveQuestionMode(deps, feature ?? {}, state.repoPath);
+    const { timeoutHours } = questionLimits(state.repoPath);
+    for (const message of pending) {
+      const expired =
+        timeoutHours !== undefined &&
+        Date.now() - message.createdAt.getTime() > timeoutHours * 3_600_000;
+      if (mode !== "auto" && !expired) continue;
+      const judge = pickJudge(deps);
+      if (!judge) return;
+      await resolveWithLead(
+        deps,
+        {
+          questionId: message.id,
+          projectId: state.projectId,
+          objective: await objectiveWithAdditions(state),
+          payload: message.payload as QuestionPayload,
+          reason: mode === "auto" ? "auto" : "timeout",
+          runner: judge.runner,
+          // A worktree da Task que perguntou: lá está o código do worker.
+          cwd:
+            (await deps.tasks.getById((message.payload as QuestionPayload).taskId))?.worktreePath ??
+            integrationWorktreePath(state.worktreesRoot, state.featureId),
+          timeoutMs: judgeTimeout,
+        },
+        signal,
+      );
+    }
   }
 
   async function latestGates(featureId: string, iteration: number) {
@@ -339,6 +400,7 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
       // restam elas, espera o plano novo aqui dentro (sem gastar passos do
       // graph) em vez de concluir a Feature sem o trabalho replanejado.
       const waitStarted = Date.now();
+      let lastAutoCheck = 0;
       let tasks = await deps.tasks.listByFeature(state.featureId);
       let byId = new Map(tasks.map((task) => [task.id, task]));
       let ready: typeof tasks = [];
@@ -363,14 +425,23 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
           (task) =>
             !TERMINAL_TASK.has(task.status) &&
             task.status !== "pending" &&
+            task.status !== "awaiting_answer" &&
             task.dependencies.every((depId) => byId.get(depId)?.status === "completed"),
         );
         const held = tasks.filter((task) => task.status === "pending");
-        if (ready.length > 0 || held.length === 0) break;
+        // M7: Tasks esperando resposta. A Feature não avança sem elas, mas o
+        // resto que não depende delas já rodou nas ondas anteriores.
+        const waiting = tasks.filter((task) => task.status === "awaiting_answer");
+        if (ready.length > 0 || (held.length === 0 && waiting.length === 0)) break;
         if (control?.isCancelled()) {
           return { outcome: "cancelled" as const, failureReason: "Feature cancelada" };
         }
-        if (Date.now() - waitStarted > HELD_TIMEOUT_MS) {
+        if (waiting.length > 0 && Date.now() - lastAutoCheck >= QUESTION_CHECK_MS) {
+          lastAutoCheck = Date.now();
+          await autoResolveQuestions(state, abortSignalOf(runtime));
+          continue;
+        }
+        if (held.length > 0 && Date.now() - waitStarted > HELD_TIMEOUT_MS) {
           // Replan que nunca terminou (ex.: daemon caiu no meio): solta as Tasks.
           for (const task of held) await deps.tasks.transitionIf(task.id, ["pending"], "ready");
           await emitEvent(deps.events, deps.logger, {
@@ -605,9 +676,7 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
       const iteration = (await deps.features.getById(state.featureId))?.fixIteration ?? 0;
       const signal = abortSignalOf(runtime);
 
-      const lead = pickJudge(deps);
-      const reviewer = pickJudge(deps, await mostUsedProvider(state.featureId));
-      if (!lead || !reviewer) {
+      if (!pickJudge(deps)) {
         return {
           outcome: "paused_capacity" as const,
           failureReason: "nenhum target para o review",
@@ -624,34 +693,64 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
         timeoutMs: judgeTimeout,
       };
 
-      const requirements = await verifyRequirements(lead.runner, context, signal);
-      await deps.qualityResults.create({
-        featureId: state.featureId,
-        iteration,
-        gate: "requirements",
-        status: requirements.checks
-          ? requirements.checks.every((c) => c.satisfied)
-            ? "passed"
-            : "failed"
-          : "error",
-        output: requirements.error ?? null,
-        details: { checks: requirements.checks ?? null, target: lead.entry.candidate.targetId },
+      // Limite de capacidade no meio do julgamento → outro provider; sem
+      // nenhum, pausa por capacidade (retoma sozinha no reset).
+      const requirementsRun = await withJudge(deps, undefined, async (judge) => {
+        const result = await verifyRequirements(judge.runner, context, signal);
+        return { ...(result.checks ? { value: result.checks } : {}), ...result };
       });
-      const review = await reviewIntegration(reviewer.runner, context, signal);
-      await deps.qualityResults.create({
-        featureId: state.featureId,
-        iteration,
-        gate: "review",
-        status: review.findings ? "passed" : "error",
-        output: review.error ?? null,
-        details: { findings: review.findings ?? null, target: reviewer.entry.candidate.targetId },
-      });
-      if (!requirements.checks || !review.findings) {
+      const reviewRun = await withJudge(
+        deps,
+        await mostUsedProvider(state.featureId),
+        async (judge) => {
+          const result = await reviewIntegration(judge.runner, context, signal);
+          return { ...(result.findings ? { value: result.findings } : {}), ...result };
+        },
+      );
+      for (const [gate, judged] of [
+        ["requirements", requirementsRun],
+        ["review", reviewRun],
+      ] as const) {
+        await deps.qualityResults.create({
+          featureId: state.featureId,
+          iteration,
+          gate,
+          status:
+            judged.kind !== "ok"
+              ? "error"
+              : gate === "requirements"
+                ? (judged.value as RequirementCheck[]).every((check) => check.satisfied)
+                  ? "passed"
+                  : "failed"
+                : "passed",
+          output:
+            judged.kind === "failed"
+              ? judged.error
+              : judged.kind === "no_capacity"
+                ? judged.reason
+                : null,
+          details: {
+            [gate === "requirements" ? "checks" : "findings"]:
+              judged.kind === "ok" ? judged.value : null,
+            target: judged.kind === "no_capacity" ? null : judged.judge.entry.candidate.targetId,
+          },
+        });
+      }
+      if (requirementsRun.kind === "no_capacity" || reviewRun.kind === "no_capacity") {
         return {
-          outcome: "needs_human" as const,
-          failureReason: `review não pôde rodar: ${requirements.error ?? review.error}`,
+          outcome: "paused_capacity" as const,
+          failureReason: "review sem provider com capacidade",
         };
       }
+      if (requirementsRun.kind === "failed" || reviewRun.kind === "failed") {
+        return {
+          outcome: "needs_human" as const,
+          failureReason: `review não pôde rodar: ${requirementsRun.kind === "failed" ? requirementsRun.error : reviewRun.kind === "failed" ? reviewRun.error : ""}`,
+        };
+      }
+      const requirements = { checks: requirementsRun.value };
+      const review = { findings: reviewRun.value };
+      const reviewer = reviewRun.judge;
 
       const verdict = evaluateCompletion({
         gates,
@@ -738,6 +837,18 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
         findings: findings ?? [],
         verdict,
         fixIterations: iteration,
+        decisions: (await deps.agentMessages.listByFeature(state.featureId))
+          .filter((message) => message.type === QUESTION && message.resolution)
+          .map((message) => {
+            const resolution = message.resolution as QuestionResolution;
+            return {
+              question: (message.payload as QuestionPayload).question,
+              answer: resolution.answer,
+              answeredBy: resolution.answeredBy,
+              reason: resolution.reason,
+              rationale: resolution.rationale,
+            };
+          }),
       });
       await deps.features.update(state.featureId, { deliverySummary: summary });
 

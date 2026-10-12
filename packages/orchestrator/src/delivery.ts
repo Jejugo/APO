@@ -19,6 +19,14 @@ export interface DeliveryInput {
   findings: ReviewFinding[];
   verdict: CompletionVerdict;
   fixIterations: number;
+  /** M7: perguntas dos workers e quem decidiu. */
+  decisions?: Array<{
+    question: string;
+    answer: string;
+    answeredBy: "human" | "lead";
+    reason: string;
+    rationale?: string | undefined;
+  }>;
 }
 
 export function buildDeliverySummary(input: DeliveryInput): string {
@@ -53,6 +61,23 @@ export function buildDeliverySummary(input: DeliveryInput): string {
       ),
       "- Nenhum finding.",
     )}`,
+    ...((input.decisions ?? []).length > 0
+      ? [
+          `## Decisões tomadas\n\n${(input.decisions ?? [])
+            .map((decision) => {
+              const who =
+                decision.answeredBy === "human"
+                  ? "você"
+                  : decision.reason === "delegated"
+                    ? "Lead (delegado por você)"
+                    : decision.reason === "timeout"
+                      ? "Lead (prazo de resposta vencido)"
+                      : "Lead (você ausente)";
+              return `- **${decision.question}** → ${decision.answer} _(${who}${decision.rationale ? `: ${decision.rationale}` : ""})_`;
+            })
+            .join("\n")}`,
+        ]
+      : []),
     `Rodadas de correção: ${input.fixIterations}. Branch: \`${input.integrationBranch}\`.`,
     "_Gerado pelo APO. O merge é manual._",
   ];

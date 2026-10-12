@@ -17,6 +17,7 @@ import {
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ServerDeps } from "../server-deps.js";
+import { answerTaskQuestion } from "./questions.js";
 
 const chatSchema = z.object({ message: z.string().min(1) });
 
@@ -252,6 +253,48 @@ export function registerChatRoutes(app: FastifyInstance, deps: ServerDeps): void
         return { ok: true, note: notes[verb] ?? "" };
       }
 
+      case "answer_question":
+      case "delegate_question": {
+        const task = await taskOf(project.id, action.taskId);
+        if (!task) return { ok: false, note: "não encontrei essa Task neste Project." };
+        if (action.action === "answer_question" && !action.answer) {
+          return { ok: false, note: "faltou a resposta." };
+        }
+        const answered = await answerTaskQuestion(deps, task.id, {
+          ...(action.action === "delegate_question"
+            ? { delegate: true }
+            : { answer: action.answer }),
+        });
+        return answered.ok
+          ? {
+              ok: true,
+              note:
+                answered.answeredBy === "lead"
+                  ? `O Lead decidiu: ${answered.answer.replace(/\.+$/, "")}. O worker retoma com essa decisão.`
+                  : `Resposta registrada (${answered.answer.replace(/\.+$/, "")}). O worker retoma a partir dela.`,
+            }
+          : { ok: false, note: answered.error };
+      }
+
+      case "set_question_mode": {
+        if (!action.questionMode) return { ok: false, note: "faltou o modo." };
+        const mode = action.questionMode === "inherit" ? null : action.questionMode;
+        if (action.featureId) {
+          const feature = await featureOf(project.id, action.featureId);
+          if (!feature) return { ok: false, note: "não encontrei essa Feature neste Project." };
+          await call("POST", `/features/${feature.id}/questions`, { mode });
+          return { ok: true, note: `Modo das perguntas da Feature: ${mode ?? "herdado"}.` };
+        }
+        await call("POST", "/settings/questions", { mode });
+        return {
+          ok: true,
+          note:
+            mode === "auto"
+              ? "Modo global: auto — o Lead decide todas as perguntas (inclusive as que já estão esperando). Os PRs continuam esperando sua aprovação."
+              : `Modo global: ${mode ?? "desligado (vale o de cada projeto)"}.`,
+        };
+      }
+
       case "explain_routing": {
         const task = await taskOf(project.id, action.taskId);
         if (!task) return { ok: false, note: "não encontrei essa Task neste Project." };
@@ -364,6 +407,27 @@ export function registerChatRoutes(app: FastifyInstance, deps: ServerDeps): void
         provider: entry.candidate.provider,
         harness: entry.candidate.harness,
       })),
+      pendingQuestions: (await deps.agentMessages.listByStatus("question", "pending"))
+        .filter((message) => features.some((feature) => feature.id === message.featureId))
+        .map((message) => {
+          const payload = message.payload as {
+            taskId: string;
+            taskTitle: string;
+            role: string;
+            question: string;
+            options: Array<{ id: string; label: string }>;
+            recommended?: string;
+          };
+          return {
+            taskId: payload.taskId,
+            taskTitle: payload.taskTitle,
+            role: payload.role,
+            question: payload.question,
+            options: payload.options,
+            recommended: payload.recommended,
+          };
+        }),
+      questionModeGlobal: (await deps.settings.get<string>("questions.mode")) ?? null,
       summary: thread.summary,
       history: history.map((row) => ({
         role: row.role,

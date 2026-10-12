@@ -106,3 +106,22 @@ export type { ChatContext, LeadAction } from "./lead-chat.js";
 export { pickJudge } from "./judge.js";
 export { replanFeature } from "./replan.js";
 export type { ReplanInput, ReplanResult } from "./replan.js";
+
+export {
+  GLOBAL_QUESTION_MODE_KEY,
+  LEAD_FIRST_MIN_CONFIDENCE,
+  QUESTION,
+  QUESTION_MODES,
+  answerQuestion,
+  effectiveQuestionMode,
+  interpretHumanAnswer,
+  pendingAnswerFor,
+  questionLimits,
+  resolveWithLead,
+} from "./questions.js";
+export type {
+  QuestionMode,
+  QuestionPayload,
+  QuestionResolution,
+  WorkerQuestion,
+} from "./questions.js";
