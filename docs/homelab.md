@@ -47,6 +47,19 @@ git config --global user.name "APO (homelab)"; git config --global user.email "<
 exit
 ```
 
+Antigravity / `agy` (opcional, modelos Gemini; limitações em `spikes/antigravity.md`): instale como `apo` (`sudo WITH_AGY=1 /opt/apo/deploy/homelab/install.sh` — fica em `/home/apo/.local/bin`, porque o `agy` se atualiza sozinho), faça o login e ative o target:
+
+```bash
+sudo -iu apo
+~/.local/bin/agy                  # login da conta Google (siga o link); depois /quit
+~/.local/bin/agy models           # confirma o login e lista os modelos
+nano ~/.apo/config.yaml           # descomente o bloco providers (claude-code, codex, antigravity)
+exit
+sudo systemctl restart apo
+```
+
+Com `dangerouslySkipPermissions: true`, o worker do `agy` roda comandos e não confina a escrita à worktree; na VM, o sandbox do systemd limita a escrita a `/home/apo`.
+
 Jev (opcional): adicione a key ao `secrets.env` do `apo`, sem colar no histórico do shell:
 
 ```bash

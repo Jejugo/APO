@@ -42,6 +42,20 @@ fi
 chmod 750 "${APO_HOME}"
 install -d -o "${APO_USER}" -g "${APO_USER}" -m 700 "${APO_HOME}/.apo" "${APO_HOME}/projects" "${APO_HOME}/backups"
 
+# Antigravity (agy) é opt-in (spikes/antigravity.md): WITH_AGY=1 instala. Fica
+# na home do apo, e não em /opt, porque o agy se atualiza sozinho e precisa
+# poder reescrever o próprio binário. O login (conta Google) é do usuário:
+#   sudo -u apo -H /home/apo/.local/bin/agy
+if [[ "${WITH_AGY:-0}" == "1" && ! -x "${APO_HOME}/.local/bin/agy" ]]; then
+  echo "==> Antigravity (agy) em ${APO_HOME}/.local/bin"
+  agy_installer="$(mktemp)"
+  curl -fsSL https://antigravity.google/cli/install.sh -o "${agy_installer}"
+  chmod 644 "${agy_installer}"
+  sudo -u "${APO_USER}" -H bash "${agy_installer}" || true
+  rm -f "${agy_installer}"
+  [[ -x "${APO_HOME}/.local/bin/agy" ]] || { echo "falha ao instalar o agy" >&2; exit 1; }
+fi
+
 echo "==> Postgres: role e banco ${APO_USER}"
 SECRETS="${APO_HOME}/.apo/secrets.env"
 touch "${SECRETS}" && chown "${APO_USER}:${APO_USER}" "${SECRETS}" && chmod 600 "${SECRETS}"

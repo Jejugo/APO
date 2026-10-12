@@ -13,8 +13,10 @@ Group=apo
 WorkingDirectory=/home/apo
 Environment=HOME=/home/apo
 Environment=NODE_ENV=production
-# Node 24 isolado (/opt/node24) na frente; claude global em /usr/local/bin.
-Environment=PATH=/opt/node24/bin:/usr/local/bin:/usr/bin:/bin
+# Node 24 isolado (/opt/node24) na frente: claude/codex do APO, com versão fixa.
+# ~/.local/bin por último só para o agy (opt-in, se atualiza sozinho), sem
+# deixar outro codex/claude dali passar na frente.
+Environment=PATH=/opt/node24/bin:/usr/local/bin:/usr/bin:/bin:/home/apo/.local/bin
 ExecStart=/opt/node24/bin/node /opt/apo/apps/daemon/dist/main.js
 Restart=on-failure
 RestartSec=5

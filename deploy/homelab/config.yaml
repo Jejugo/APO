@@ -12,3 +12,10 @@ jev:
   enabled: true
 memory:
   enabled: true
+# Antigravity (agy) é opt-in: instale com WITH_AGY=1 no install.sh, faça o login
+# como apo e descomente. Listar targets substitui o padrão: mantenha claude e codex.
+# providers:
+#   targets:
+#     - { id: claude-code, harness: claude-code, provider: anthropic }
+#     - { id: codex, harness: codex, provider: openai }
+#     - { id: antigravity, harness: antigravity, provider: google, model: gemini-3.8-flash-high, dangerouslySkipPermissions: true }
