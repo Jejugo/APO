@@ -2120,6 +2120,8 @@ A TUI consome os mesmos APIs/events usados pela CLI.
 
 Não duplicar regras de negócio.
 
+**Evolução (2026-10): cockpit.** A TUI vira um cockpit de agentes: agentes por role com estado ao vivo, o orquestrador criando/trocando/encerrando agentes, o fluxo de mensagens entre eles (sempre via orquestrador), e a possibilidade de entrar num agente — acompanhar, mandar mensagem (interrompe e retoma a mesma sessão) ou assumir o controle no CLI interativo e devolver. Detalhes no M8 do `TECHNICAL_PLAN.md`; viabilidade em `spikes/interrupt-resume.md`.
+
 
 ---
 

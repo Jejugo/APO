@@ -622,7 +622,7 @@ Com ele, failover, recovery, paralelismo, conflitos de merge e loops de review s
 
 Convenção: cada fase lista **entregas** (numeradas, cada uma do tamanho de um commit ou PR), **testes obrigatórios** e o **gate de saída**. As estimativas estão em semanas de um dev com agentes e somam o intervalo do ROADMAP.md.
 
-**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → M7 ✅ → **M8 (TUI)** → **M9 (interface web)**. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
+**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → M7 ✅ → **M8 (cockpit/TUI)** → **M9 (interface web)**. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
 
 | Entrega | De | Para | Motivo |
 |---|---|---|---|
@@ -1093,34 +1093,76 @@ O modo **não** muda a aprovação do PR: Features prontas continuam esperando o
 
 ---
 
-### M8 — TUI
+### M8 — Cockpit (TUI)
 
-**Objetivo:** operar o APO por uma tela de terminal navegável — ver tudo e agir sem decorar comandos. Evolução do `apo watch` (pós-M6) e Phase 14 do PLAN.md.
-**Estimativa:** 1 a 1,5 semana.
-**Pré-requisito:** M7 (perguntas ao humano), para a TUI já nascer mostrando e respondendo perguntas; fora isso, só as APIs que o daemon já expõe.
+**Objetivo:** uma tela de terminal de "cockpit" para operar o APO: ver todos os agentes trabalhando (role, agente, estado), o orquestrador criando, trocando e encerrando agentes, a comunicação entre eles, e **entrar em qualquer agente** — acompanhar ao vivo, mandar uma mensagem ou assumir o controle no CLI interativo de verdade e depois devolver. Evolução do `apo watch` (pós-M6) e Phase 14 do PLAN.md.
+**Estimativa:** ~2,5 semanas.
+**Pré-requisitos:** M7 (perguntas aparecem e são respondidas no cockpit). Spike de interrupção e controle: [`spikes/interrupt-resume.md`](./spikes/interrupt-resume.md) — mensagem ao agente e assumir/devolver funcionam no Claude Code e no Codex, com as regras das entregas M8.6 e M8.7.
+
+#### Modelo
+
+Um agente do APO é um processo que nasce para uma Task e termina com ela (`claude -p`, `codex exec`), rodando sem tela. O cockpit mostra **agentes por role** dentro de cada Feature, com estados derivados do que o APO já registra:
+
+| Estado | Origem |
+|---|---|
+| `working` | attempt rodando (com o stream ao vivo) |
+| `waiting` | Task esperando dependência ou vaga de worker |
+| `question` | `awaiting_answer` (M7) |
+| `held` | segurada por replan |
+| `taken_over` | o usuário está no controle (M8.7) |
+| `idle` | role sem trabalho no momento (ex.: Reviewer antes do review) |
+| `done` / `failed` | Task concluída / falhou |
+
+Lead e Reviewer não são processos persistentes: aparecem como `working` durante triage, plano, decisões e review, e `idle` no resto. Os agentes não conversam entre si; toda comunicação passa pelo orquestrador (handover, perguntas e respostas, achados do review que viram correção, mensagens do usuário), e o cockpit mostra esse fluxo como mensagens com remetente e destinatário.
+
+```
+┌ APO cockpit ── ubuntu-lab ── claude ● 2/3   codex ● 1/2   Jev ● ───────────────┐
+│ FEATURES                 │ AGENTES  (feature: filtro de categorias)              │
+│ ▸ filtro categorias  ▶   │  #1 backend-dev    claude  ● working   4m12  $0.31    │
+│   cupons            ✋   │  #2 frontend-dev   codex   ? pergunta  2m03           │
+│   frete             ✔ PR │  #3 test-writer    —       ◌ espera #1,#2             │
+│                          │  ── reviewer       claude  ◌ ocioso                   │
+├──────────────────────────┴───────────────────────────────────────────────────────┤
+│ #1 backend-dev ao vivo                                                           │
+│  ✎ src/filters.ts   $ pnpm test → 12 passed   "Agora vou cobrir o caso vazio…"  │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│ ORQUESTRADOR  14:02 criou #3 (test-writer)  14:03 #2 claude→codex (quota)        │
+│               14:05 #2 pergunta: "várias categorias ao mesmo tempo?" a/b/c       │
+└ ↑↓ navegar  enter entrar  m mensagem  t assumir  a responder  ? ajuda ──────────┘
+```
 
 #### Entregas
 
 | # | Entrega | Detalhes |
 |---|---|---|
-| M8.1 | Base da TUI | Decidir a biblioteca no início (ADR): Ink (React para terminal, testável com `ink-testing-library`) ou renderização ANSI própria como o `apo watch`. Comando `apo tui`. Funciona com `APO_URL` (remoto) e por SSH; respeita redimensionamento e `NO_COLOR` |
-| M8.2 | Navegação | Colunas Projects → Features → Tasks, com status, agente, tempo e dependências. Atualização por polling curto ou SSE de eventos (reaproveitar `GET /features/:id/board`; criar um endpoint de visão geral por Project se o polling pesar) |
-| M8.3 | Providers e eventos | Painel de providers (`/health`, `apo providers`: disponibilidade, workers ativos, reset, Jev) e fluxo dos eventos da Feature selecionada |
-| M8.4 | Agente ao vivo | A Task selecionada mostra o stream de `GET /tasks/:id/live` com o mesmo formatador do `apo task tail` (`apps/cli/src/live/format.ts`) |
-| M8.5 | Ações | Nova Feature/bugfix (formulário com objetivo, intent, preferência), aprovar, rejeitar com motivo, cancelar, pausar/retomar, reroute de Task, preferência da Feature, `memory add`. Confirmação explícita em aprovar/rejeitar/cancelar |
-| M8.6 | Chat com o Lead | Painel com `POST /projects/:id/chat`; o resultado da ação aparece na lista sem recarregar |
+| M8.1 | Base | Biblioteca decidida no início (ADR): Ink (React para terminal, testável com `ink-testing-library`) ou renderização ANSI própria como o `apo watch`. Comando `apo cockpit` (alias `apo tui`). Funciona com `APO_URL` (Tailscale) e por SSH na VM; respeita redimensionamento e `NO_COLOR` |
+| M8.2 | Visão global ao vivo | Endpoint de visão geral (Features ativas de todos os Projects, com Tasks, attempts e agentes) e stream de eventos por SSE (`GET /events/stream`), em vez de polling por Feature. Cabeçalho com providers (`/health`: disponibilidade, workers ativos/vagas, reset, Jev) |
+| M8.3 | Agentes por role | Lista de agentes da Feature selecionada com role, harness, estado (tabela acima), tempo, custo e tentativa. Lead e Reviewer passam a emitir `agent.started`/`agent.finished` (hoje só os workers têm attempt), para aparecerem trabalhando |
+| M8.4 | Entrar no agente | `enter` abre o agente: stream ao vivo do `GET /tasks/:id/live` com o formatador do `apo task tail`, histórico de tentativas (failover, motivo), pergunta pendente e diff da worktree |
+| M8.5 | Orquestrador e comunicação | Faixa de eventos do orquestrador (agente criado, encerrado, trocado por quota, Tasks canceladas no replan, correção aberta pelo review) e painel de mensagens de/para (handover, pergunta → resposta, finding → Task corretiva, mensagem do usuário) |
+| M8.6 | Mensagem ao agente (`m`) | `POST /tasks/:id/message { text, interrupt }`. Com `interrupt` (padrão): cancela o attempt com motivo `interrupted_by_user` — **não** conta como falha, não dispara failover — e retoma **a mesma sessão** (`harness.resume`, `resolutionSource: "resume"`) com a mensagem, como na resposta do M7. Sem `interrupt`: a mensagem vai na próxima retomada. Harness sem `resume` → attempt novo na mesma worktree com handover + mensagem. Registrada em `agent_messages` (`type: "user_message"`). CLI: `apo task message <task> "<texto>" [--no-interrupt]` |
+| M8.7 | Assumir e devolver (`t` / `r`) | `POST /tasks/:id/takeover`: interrompe o attempt (`interrupted_by_user`), Task → `taken_over` (o runner não a executa: um escritor por sessão) e devolve o comando de assumir, conhecimento por harness em `packages/harnesses` — Claude `claude --resume <id>`; Codex `codex resume --no-daemon <id>` (sem `--no-daemon` o daemon do Codex segura a thread e a devolução falha). O cockpit abre o CLI interativo numa tela nova (pane do tmux/Herdr se houver; senão suspende o cockpit e volta ao sair), local ou na VM via `ssh -t <host> sudo -u apo -H` dentro da worktree. Claude: pré-aceitar o "trust" da worktree. `POST /tasks/:id/handback`: retomada sem tela com o prompt "o usuário devolveu o controle; conclua e entregue o relatório" e o schema do `WorkerReport`; dali o fluxo é o normal (gates, review). `taken_over` sobrevive a restart do daemon. CLI: `apo task takeover <task>` (imprime/abre o comando) e `apo task handback <task>` |
+| M8.8 | Perguntas | Perguntas do M7 em destaque; responder (`a`) ou delegar ("decida você") na própria tela; modo global (`auto on/off`) visível e alternável no cabeçalho |
+| M8.9 | Ações | Nova Feature/bugfix (objetivo, intent, preferência), aprovar, rejeitar com motivo, cancelar, pausar/retomar, reroute de Task, preferência da Feature, `memory add`. Confirmação explícita em aprovar/rejeitar/cancelar/assumir |
+| M8.10 | Chat com o Lead | Painel com `POST /projects/:id/chat`; o resultado da ação aparece na tela sem recarregar |
+| M8.11 | Skill e docs | Comandos novos na skill `apo`; `docs/development.md` e `docs/homelab.md` com o fluxo de assumir na VM |
 
 #### Testes obrigatórios
 
-- Renderização dos estados principais (Feature em execução, `awaiting_approval`, `needs_human`, failover) com dados de fixture.
-- Cada ação chama a rota certa com o payload certo; ações destrutivas não disparam sem confirmação.
+- Renderização dos estados principais (Feature em execução, agente em cada estado da tabela, failover, pergunta, `awaiting_approval`, `needs_human`) com fixtures.
+- Mensagem com interrupção (FakeHarness): o attempt é cancelado sem contar falha nem trocar de target, a retomada usa a **mesma sessão** com a mensagem no prompt, a Task conclui normalmente; sem `resume` → attempt novo com a mensagem.
+- Assumir: Task em `taken_over` não é executada pelo runner nem pelo recovery; devolver retoma a mesma sessão pedindo o relatório; restart do daemon com Task assumida mantém o estado.
+- Comando de assumir do Codex sempre com `--no-daemon` (teste em `packages/harnesses`).
+- Cada ação chama a rota certa; ações destrutivas e assumir não disparam sem confirmação.
 - Daemon fora do ar / token inválido → mensagem clara, sem travar a tela.
 
 #### Gate de saída
 
-- [ ] Uma Feature é criada, acompanhada (incluindo o agente ao vivo) e aprovada só pela TUI.
-- [ ] Funciona do Mac pelo Tailscale (`APO_URL`) e por SSH na VM.
-- [ ] Nenhuma regra de negócio nova: toda ação passa pelas rotas que a CLI já usa.
+- [ ] Real: o cockpit mostra, ao vivo, Features de dois Projects ao mesmo tempo, com os agentes por role mudando de estado — incluindo Lead/Reviewer trabalhando e uma troca de agente por quota.
+- [ ] Real: mensagem a um worker no meio do trabalho → ele é interrompido, retoma a mesma sessão seguindo a mensagem e a Task conclui.
+- [ ] Real: do Mac, assumir um worker que roda na VM, conversar com ele no CLI interativo, devolver → o APO segue com gates e review até "Abrir o PR?".
+- [ ] Uma Feature é criada, acompanhada e aprovada só pelo cockpit, pelo Tailscale (`APO_URL`) e por SSH na VM.
+- [ ] Nenhuma regra de negócio dentro da TUI: toda ação passa por rotas do daemon, também usadas pela CLI.
 
 ---
 
@@ -1138,7 +1180,7 @@ O modo **não** muda a aprovação do PR: Features prontas continuam esperando o
 | M9.2 | Autenticação | Tela de login com o `APO_REMOTE_TOKEN` trocado por sessão em cookie `HttpOnly`, `Secure` quando houver HTTPS (Tailscale serve/cert), `SameSite=Strict`, com expiração; proteção CSRF nas rotas de escrita. O token nunca vai para URL, `localStorage` ou log |
 | M9.3 | Diff da integração | `GET /features/:id/diff` (diff da branch de integração contra a base, por arquivo, com limite de tamanho) |
 | M9.4 | Telas | Projects; Features (lista com status); detalhe da Feature (DAG de Tasks, gates por iteração, requisitos, findings do review, resumo de entrega, diff, link do PR); agente ao vivo (SSE de `/tasks/:id/live`); providers/saúde; memória do Project |
-| M9.5 | Ações | As mesmas do M8.5, com confirmação nas destrutivas; nova Feature/bugfix com o mesmo tratamento de sobreposição (`ask_user` → isolar/absorver) |
+| M9.5 | Ações | As mesmas do M8.9 (e mensagem ao agente, M8.6), com confirmação nas destrutivas; nova Feature/bugfix com o mesmo tratamento de sobreposição (`ask_user` → isolar/absorver) |
 | M9.6 | Chat com o Lead | Conversa do Project (`/projects/:id/chat`), com histórico |
 | M9.7 | Mobile | Layout mobile-first (celular no Tailscale). Notificação de "Feature pronta para PR" via web push é **condicional**: só se o uso mostrar que abrir a página não basta |
 

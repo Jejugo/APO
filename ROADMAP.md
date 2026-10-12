@@ -44,7 +44,7 @@ E adiando:
 
 ## 3. Marcos
 
-> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → M7 ✅ → **M8 (TUI)** → **M9 (interface web)**.
+> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → M7 ✅ → **M8 (cockpit/TUI)** → **M9 (interface web)**.
 >
 > O failover entre providers (M3) passa na frente do DAG multi-task (M2). É o diferencial que nenhum runtime externo de agent teams oferece, e funciona já em cima do graph do M1, que na prática é o `SingleAgentEngine` (ver seção 4.7). O M2 fica congelado até um triage rápido decidir se o `ApoNativeEngine` precisa mesmo da infraestrutura de times própria ou se parte dela pode vir de um runtime externo.
 >
@@ -165,17 +165,20 @@ Quando um worker precisa de uma decisão que não é dele (produto, UX, pedido a
 
 ---
 
-### M8 — TUI (~1 a 1,5 semana)
+### M8 — Cockpit (TUI) (~2,5 semanas)
 
-Interface de terminal completa, evolução do `apo watch` (Phase 14 do PLAN.md). Hoje a visão é só leitura e as ações são comandos soltos; a TUI junta as duas coisas numa tela navegável por teclado.
+Uma tela de "cockpit" no terminal, evolução do `apo watch` (Phase 14 do PLAN.md): ver todos os agentes trabalhando e entrar em qualquer um deles. Hoje a visão é só leitura e as ações são comandos soltos; o cockpit junta tudo numa tela navegável por teclado.
 
-- Colunas Projects → Features → Tasks, painel de providers (capacidade, workers ativos, reset) e fluxo de eventos.
-- Agente da Task selecionada ao vivo (o mesmo stream do `apo task tail`).
-- Ações na própria tela: nova Feature/bugfix, aprovar, rejeitar com motivo, cancelar, pausar/retomar, reroute, preferência; chat com o Lead num painel.
-- Funciona local e remoto (`APO_URL`, Tailscale) e por SSH.
-- **Regra:** consome as mesmas APIs/eventos da CLI; nenhuma regra de negócio nova. Ações destrutivas (aprovar, rejeitar, cancelar) pedem confirmação.
+- Visão global ao vivo (SSE): Features ativas de todos os Projects, providers e capacidade no cabeçalho.
+- **Agentes por role**, com estado (trabalhando, esperando, pergunta, segurado, assumido, ocioso, concluído/falhou), agente, tempo e custo — incluindo Lead e Reviewer quando trabalham.
+- **Orquestrador e comunicação**: agentes criados, trocados por quota e encerrados; mensagens de/para (handover, perguntas e respostas, achados do review que viram correção, mensagens do usuário).
+- **Entrar no agente**: stream ao vivo, tentativas, pergunta pendente, diff.
+- **Mensagem ao agente**: interrompe e retoma a mesma sessão com o texto do usuário (sem contar como falha).
+- **Assumir e devolver**: abre o CLI interativo de verdade (Claude/Codex) na sessão do worker — local ou na VM por SSH — e, ao devolver, o APO segue com gates e review. Validado no [spike](./spikes/interrupt-resume.md).
+- Perguntas do M7, ações (nova Feature, aprovar, rejeitar, cancelar, pausar, reroute) e chat com o Lead na própria tela.
+- **Regra:** consome as APIs/eventos do daemon (também usados pela CLI); nenhuma regra de negócio na TUI. Ações destrutivas e assumir pedem confirmação.
 
-**Aceite:** uma Feature é criada, acompanhada (incluindo o agente ao vivo) e aprovada só pela TUI, do Mac e por SSH na VM.
+**Aceite:** o cockpit mostra agentes de duas Features ao vivo; uma mensagem redireciona um worker no meio do trabalho; um worker da VM é assumido do Mac e devolvido, e a Feature chega a "Abrir o PR?"; uma Feature é criada, acompanhada e aprovada só pelo cockpit.
 
 ---
 
