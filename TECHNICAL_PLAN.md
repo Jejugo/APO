@@ -622,7 +622,7 @@ Com ele, failover, recovery, paralelismo, conflitos de merge e loops de review s
 
 Convenção: cada fase lista **entregas** (numeradas, cada uma do tamanho de um commit ou PR), **testes obrigatórios** e o **gate de saída**. As estimativas estão em semanas de um dev com agentes e somam o intervalo do ROADMAP.md.
 
-**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → **M7 (TUI)** → **M8 (interface web)**. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
+**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → **M7 (perguntas ao humano)** → **M8 (TUI)** → **M9 (interface web)**. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
 
 | Entrega | De | Para | Motivo |
 |---|---|---|---|
@@ -767,9 +767,9 @@ Cada spike é um script em `spikes/<cli>/run.ts` que roda contra uma cópia do `
 | M2.17 | `apo role list` / `apo role show <id>` | Lista os roles resolvidos (embutidos + overrides do Project) e mostra o `systemPrompt` e a `executionPreference` efetivos de um id |
 | M2.18 | `packages/messaging`: `MessageBus`, `MessageRepository`, `AgentInbox` | **Adiado (triage M2.0).** Tabelas `agent_messages` e `message_deliveries` (tipos `information`/`question` nesta fase). `AgentInbox.pendingFor(role, task)` consultado pelo `PromptBuilder` (M2.16) ao montar o prompt de um worker novo — broadcast por (Feature, role), FIFO, com teto `messageCapPerRole` (seção 6.9) |
 | M2.18b | `messages.undelivered` | **Adiado (triage M2.0).** Hook no `transition()` (M0.4): ao entrar em status terminal, varre `agent_messages` sem linha em `message_deliveries` e emite o evento por mensagem |
-| M2.19 | Pergunta bloqueante ao agente persistente | **Adiado (triage M2.0).** `WorkerReport.blockedQuestion` → Task `awaiting_answer` → `AgentRunner.run("lead", …)` responde usando requirements + artefatos da Feature. Confiança baixa (sem `questionPolicy` ainda — isso é M3) → `needs_human` |
-| M2.20 | Resume pós-resposta | **Adiado (triage M2.0).** Task retomada preferindo `harness.resume(sessionId)` nativo; sem isso, nova attempt com a pergunta+resposta injetada no contexto (mesmo envelope do `TaskHandover`, seção 6.4) |
-| M2.21 | `apo task answer <id> "resposta"` | **Adiado (triage M2.0).** Persiste a resposta humana em `agent_messages.answer`, Task `awaiting_answer`/`needs_human` → nova attempt |
+| M2.19 | Pergunta bloqueante ao agente persistente | **Absorvido no M7** (perguntas ao humano, com o Lead como delegado). Texto original: `WorkerReport.blockedQuestion` → Task `awaiting_answer` → `AgentRunner.run("lead", …)` responde usando requirements + artefatos da Feature. Confiança baixa (sem `questionPolicy` ainda — isso é M3) → `needs_human` |
+| M2.20 | Resume pós-resposta | **Absorvido no M7 (M7.6).** Texto original: Task retomada preferindo `harness.resume(sessionId)` nativo; sem isso, nova attempt com a pergunta+resposta injetada no contexto (mesmo envelope do `TaskHandover`, seção 6.4) |
+| M2.21 | `apo task answer <id> "resposta"` | **Absorvido no M7 (M7.5).** Texto original: Persiste a resposta humana em `agent_messages.answer`, Task `awaiting_answer`/`needs_human` → nova attempt |
 | M2.22 | `buildWorkerEnvironment()` | ✅ entregue no M3 (M3.0b) |
 | M2.23 | `AntigravityHarness` | `agy -p` como harness single-agent (provider `google`, modelos Gemini via conta Google). Passa pelo protocolo de spike do M0 (headless, saída estruturada, read-only real, escrita restrita, cancelamento, erros) e pela suíte de contrato do M1.5. Substitui o `GeminiCliHarness` bloqueado (M3.1) |
 
@@ -846,7 +846,7 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 | M3.9 | `paused_capacity` | Todos os targets indisponíveis → Feature `paused_capacity` + evento. Um timer no daemon retoma ao passar o menor `resetAt`. Não chama API paga |
 | M3.10 | Comandos | `apo providers`, `apo task assign`, `apo task preference`, `apo feature preference`, `apo task reroute` (manual: pausa → handover → stop → novo target) |
 | M3.11 | `team.yaml`: PO e CTO | **Adiado para depois do M2** (depende do `RoleRegistry`, M2.15). `ProjectAgent` para `product-owner` e `cto`, com `RoleDefinition` própria (seção 6.7/6.8). Desabilitados por padrão — o usuário habilita no `project.yaml` |
-| M3.12 | `questionPolicy` por role | **Adiado para depois do M2** (depende das perguntas bloqueantes, M2.19). Estende `RoleDefinition` (seção 6.9). Uma pergunta bloqueante passa a resolver por tópico: `lead`/`product-owner`/`cto`/`human`, em vez de sempre `lead` (comportamento do M2) |
+| M3.12 | `questionPolicy` por role | **Substituído pelos modos do M7** (`ask_human` / `lead_first` / `auto`, por Feature, global ou Project). Roteamento por tópico para PO/CTO volta junto com o M3.11, se um dia fizer sentido. Texto original: depende das perguntas bloqueantes, M2.19. Estende `RoleDefinition` (seção 6.9). Uma pergunta bloqueante passa a resolver por tópico: `lead`/`product-owner`/`cto`/`human`, em vez de sempre `lead` (comportamento do M2) |
 
 #### Testes obrigatórios
 
@@ -1025,22 +1025,83 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 ---
 
-### M7 — TUI
+### M7 — Perguntas ao humano
 
-**Objetivo:** operar o APO por uma tela de terminal navegável — ver tudo e agir sem decorar comandos. Evolução do `apo watch` (pós-M6) e Phase 14 do PLAN.md.
-**Estimativa:** 1 a 1,5 semana.
-**Pré-requisito:** nenhum além do M6; usa só as APIs que o daemon já expõe.
+**Objetivo:** quando um worker precisa de uma decisão que não é dele (produto, UX, ambiguidade no pedido), ele pergunta — e a pergunta chega **ao usuário**, que responde, ou delega ao Lead ("decida você"). Um interruptor (`auto`) faz o Lead decidir tudo sozinho, para deixar os agentes rodando sem supervisão (ex.: a noite toda).
+**Estimativa:** ~1 semana.
+**Absorve:** M2.19–M2.21 (perguntas bloqueantes e resume pós-resposta) e substitui o M3.12 (`questionPolicy`). M2.18 (mensageria entre agentes) e M3.11 (PO/CTO) continuam adiados.
+
+#### Como funciona
+
+Os CLIs rodam em modo não interativo: o worker não consegue esperar uma resposta no meio da sessão. Ele **encerra o turno** com a pergunta no `WorkerReport`, a Task vai para `awaiting_answer` (worktree e sessão preservadas) e o resto da Feature segue — só esperam as Tasks que dependem dela. A resposta retoma **a mesma sessão** do agente.
+
+```
+❓ O worker de UI (Task #3, frontend-developer) está perguntando:
+   "O filtro por categoria deve aceitar várias categorias ao mesmo tempo?"
+   a) Uma categoria por vez        b) Várias, com checkboxes  ← recomendado
+   c) Várias, com chips removíveis
+Responda: apo task answer <task> b   |   apo task answer <task> --delegate  ("decida você")
+```
+
+#### Modos
+
+| Modo | Comportamento |
+|---|---|
+| `ask_human` (**padrão**) | A pergunta vai para o usuário. "Decida você" delega ao Lead |
+| `lead_first` | O Lead tenta responder; só pergunta ao usuário se não tiver confiança |
+| `auto` | O Lead sempre decide, na hora (o "autoResolveQuestions") |
+
+Níveis, do mais específico para o mais geral: **Feature** (`apo run --auto-resolve`, `apo feature questions <id> <modo>`) → **global/runtime** (`apo questions auto on|off`, ou pelo chat — liga e desliga sem editar arquivo nem commitar) → **Project** (`questions.mode` no `.apo/project.yaml`). Ligar `auto` com perguntas pendentes resolve as pendentes na hora.
+
+O modo **não** muda a aprovação do PR: Features prontas continuam esperando o "Abrir o PR?" humano (aprovação automática é outro assunto — YOLO, seção 28 do PLAN.md). Gates, verificação de requisitos e review continuam rodando sobre o que o Lead decidiu.
 
 #### Entregas
 
 | # | Entrega | Detalhes |
 |---|---|---|
-| M7.1 | Base da TUI | Decidir a biblioteca no início (ADR): Ink (React para terminal, testável com `ink-testing-library`) ou renderização ANSI própria como o `apo watch`. Comando `apo tui`. Funciona com `APO_URL` (remoto) e por SSH; respeita redimensionamento e `NO_COLOR` |
-| M7.2 | Navegação | Colunas Projects → Features → Tasks, com status, agente, tempo e dependências. Atualização por polling curto ou SSE de eventos (reaproveitar `GET /features/:id/board`; criar um endpoint de visão geral por Project se o polling pesar) |
-| M7.3 | Providers e eventos | Painel de providers (`/health`, `apo providers`: disponibilidade, workers ativos, reset, Jev) e fluxo dos eventos da Feature selecionada |
-| M7.4 | Agente ao vivo | A Task selecionada mostra o stream de `GET /tasks/:id/live` com o mesmo formatador do `apo task tail` (`apps/cli/src/live/format.ts`) |
-| M7.5 | Ações | Nova Feature/bugfix (formulário com objetivo, intent, preferência), aprovar, rejeitar com motivo, cancelar, pausar/retomar, reroute de Task, preferência da Feature, `memory add`. Confirmação explícita em aprovar/rejeitar/cancelar |
-| M7.6 | Chat com o Lead | Painel com `POST /projects/:id/chat`; o resultado da ação aparece na lista sem recarregar |
+| M7.1 | Contrato do worker | `WorkerReport.question`: `{ question, options: [{ id, label, description? }], recommended?, context }`. O PromptBuilder instrui: perguntar só quando há impacto de produto/UX ou ambiguidade real; detalhe técnico o worker decide e anota no `summary`. Teto `questions.maxPerTask` (padrão 2) — acima disso, decide sozinho |
+| M7.2 | Estado `awaiting_answer` | A Task para com a pergunta, preservando worktree e `sessionId`. O `execute_wave` não roda dependentes dela e não conclui a Feature com pergunta pendente (espera dentro do node, como o replan do M6.4). Sobrevive a restart (estado no banco) |
+| M7.3 | Persistência | `agent_messages` (`type: "question"`): status `pending` → `answered` / `delegated` / `auto`; resposta, quem respondeu (`human` / `lead`), motivo da decisão do Lead, opções e recomendação originais |
+| M7.4 | Modos e interruptor | Resolução Feature → global (runtime, persistido no banco) → Project. CLI: `apo questions auto on\|off`, `apo questions status`, `apo feature questions <id> <modo>`, `apo run --auto-resolve`. Ações correspondentes no `apo chat` |
+| M7.5 | Responder | `apo task answer <task> "<opção ou texto livre>"`, `apo task answer <task> --delegate`; `apo questions list` (pendentes de todos os Projects). No chat: "vai de b", "decida você". O Lead decide com objetivo + requisitos + artefatos + memória e registra o motivo |
+| M7.6 | Retomada | `harness.resume(sessionId)` com a resposta (Claude Code `--resume`, Codex `exec resume`); se falhar, novo attempt na mesma worktree com pergunta + resposta no contexto (envelope do handover) |
+| M7.7 | Aviso | Evento `task.question`; destaque no `apo logs -f`, no `apo watch` e no contexto do `apo chat`; a skill `apo` reporta perguntas pendentes ao acompanhar uma Feature |
+| M7.8 | Prazo opcional | `questions.timeoutHours` (sem padrão = espera para sempre): passado o prazo, o Lead decide e marca como decisão por prazo |
+| M7.9 | Registro | Decisões viram memória (`decision`) do Project, para a mesma dúvida não voltar. `apo feature report` e o corpo do PR ganham a seção "Decisões tomadas" (por você / pelo Lead, com motivo) |
+
+#### Testes obrigatórios
+
+- Worker pergunta → Task `awaiting_answer`; Tasks independentes seguem; a dependente espera; a Feature não conclui.
+- Resposta humana → retomada na mesma sessão com a resposta no prompt; fallback para attempt novo quando o resume falha.
+- `--delegate` → o Lead decide, a resposta e o motivo ficam registrados.
+- Modo `auto` (por Feature e global) → nenhuma espera humana; ligar `auto` com pendentes resolve as pendentes.
+- `lead_first` com confiança baixa → pergunta chega ao humano.
+- Teto por Task respeitado; restart do daemon com pergunta pendente → continua pendente e responde depois.
+
+#### Gate de saída
+
+- [ ] Real: um worker pergunta, a pergunta aparece no `apo chat`/`apo watch`, o usuário responde e o worker retoma **a mesma sessão** usando a resposta.
+- [ ] Real: "decida você" → o Lead decide, o motivo aparece no report e no PR.
+- [ ] Real: com `apo questions auto on`, uma Feature com pergunta vai até "Abrir o PR?" sem nenhuma interação humana, e o report lista as decisões tomadas pelo Lead.
+
+---
+
+### M8 — TUI
+
+**Objetivo:** operar o APO por uma tela de terminal navegável — ver tudo e agir sem decorar comandos. Evolução do `apo watch` (pós-M6) e Phase 14 do PLAN.md.
+**Estimativa:** 1 a 1,5 semana.
+**Pré-requisito:** M7 (perguntas ao humano), para a TUI já nascer mostrando e respondendo perguntas; fora isso, só as APIs que o daemon já expõe.
+
+#### Entregas
+
+| # | Entrega | Detalhes |
+|---|---|---|
+| M8.1 | Base da TUI | Decidir a biblioteca no início (ADR): Ink (React para terminal, testável com `ink-testing-library`) ou renderização ANSI própria como o `apo watch`. Comando `apo tui`. Funciona com `APO_URL` (remoto) e por SSH; respeita redimensionamento e `NO_COLOR` |
+| M8.2 | Navegação | Colunas Projects → Features → Tasks, com status, agente, tempo e dependências. Atualização por polling curto ou SSE de eventos (reaproveitar `GET /features/:id/board`; criar um endpoint de visão geral por Project se o polling pesar) |
+| M8.3 | Providers e eventos | Painel de providers (`/health`, `apo providers`: disponibilidade, workers ativos, reset, Jev) e fluxo dos eventos da Feature selecionada |
+| M8.4 | Agente ao vivo | A Task selecionada mostra o stream de `GET /tasks/:id/live` com o mesmo formatador do `apo task tail` (`apps/cli/src/live/format.ts`) |
+| M8.5 | Ações | Nova Feature/bugfix (formulário com objetivo, intent, preferência), aprovar, rejeitar com motivo, cancelar, pausar/retomar, reroute de Task, preferência da Feature, `memory add`. Confirmação explícita em aprovar/rejeitar/cancelar |
+| M8.6 | Chat com o Lead | Painel com `POST /projects/:id/chat`; o resultado da ação aparece na lista sem recarregar |
 
 #### Testes obrigatórios
 
@@ -1056,23 +1117,23 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 
 ---
 
-### M8 — Interface web
+### M9 — Interface web
 
 **Objetivo:** a operação da TUI no navegador, acessível só pelo Tailscale — inclusive do celular — para acompanhar e aprovar longe do terminal.
 **Estimativa:** 2 a 3 semanas.
-**Pré-requisito:** M7 (as telas e ações já validadas na TUI viram o escopo da web).
+**Pré-requisito:** M8 (as telas e ações já validadas na TUI viram o escopo da web).
 
 #### Entregas
 
 | # | Entrega | Detalhes |
 |---|---|---|
-| M8.1 | App web | `apps/web`, SPA buildada estática e servida pelo daemon **só no listener do Tailscale** (nunca no socket local, nunca na internet). Stack decidida no início (ADR); manter sem servidor próprio — o backend é o daemon |
-| M8.2 | Autenticação | Tela de login com o `APO_REMOTE_TOKEN` trocado por sessão em cookie `HttpOnly`, `Secure` quando houver HTTPS (Tailscale serve/cert), `SameSite=Strict`, com expiração; proteção CSRF nas rotas de escrita. O token nunca vai para URL, `localStorage` ou log |
-| M8.3 | Diff da integração | `GET /features/:id/diff` (diff da branch de integração contra a base, por arquivo, com limite de tamanho) |
-| M8.4 | Telas | Projects; Features (lista com status); detalhe da Feature (DAG de Tasks, gates por iteração, requisitos, findings do review, resumo de entrega, diff, link do PR); agente ao vivo (SSE de `/tasks/:id/live`); providers/saúde; memória do Project |
-| M8.5 | Ações | As mesmas do M7.5, com confirmação nas destrutivas; nova Feature/bugfix com o mesmo tratamento de sobreposição (`ask_user` → isolar/absorver) |
-| M8.6 | Chat com o Lead | Conversa do Project (`/projects/:id/chat`), com histórico |
-| M8.7 | Mobile | Layout mobile-first (celular no Tailscale). Notificação de "Feature pronta para PR" via web push é **condicional**: só se o uso mostrar que abrir a página não basta |
+| M9.1 | App web | `apps/web`, SPA buildada estática e servida pelo daemon **só no listener do Tailscale** (nunca no socket local, nunca na internet). Stack decidida no início (ADR); manter sem servidor próprio — o backend é o daemon |
+| M9.2 | Autenticação | Tela de login com o `APO_REMOTE_TOKEN` trocado por sessão em cookie `HttpOnly`, `Secure` quando houver HTTPS (Tailscale serve/cert), `SameSite=Strict`, com expiração; proteção CSRF nas rotas de escrita. O token nunca vai para URL, `localStorage` ou log |
+| M9.3 | Diff da integração | `GET /features/:id/diff` (diff da branch de integração contra a base, por arquivo, com limite de tamanho) |
+| M9.4 | Telas | Projects; Features (lista com status); detalhe da Feature (DAG de Tasks, gates por iteração, requisitos, findings do review, resumo de entrega, diff, link do PR); agente ao vivo (SSE de `/tasks/:id/live`); providers/saúde; memória do Project |
+| M9.5 | Ações | As mesmas do M8.5, com confirmação nas destrutivas; nova Feature/bugfix com o mesmo tratamento de sobreposição (`ask_user` → isolar/absorver) |
+| M9.6 | Chat com o Lead | Conversa do Project (`/projects/:id/chat`), com histórico |
+| M9.7 | Mobile | Layout mobile-first (celular no Tailscale). Notificação de "Feature pronta para PR" via web push é **condicional**: só se o uso mostrar que abrir a página não basta |
 
 #### Testes obrigatórios
 

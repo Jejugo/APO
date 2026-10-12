@@ -20,7 +20,7 @@ E adiando:
 
 - Jev (depende de serviço externo);
 - memória/pgvector (otimização sobre um sistema que já funciona);
-- TUI e interface web (só depois do motor estar estável — agora M7 e M8).
+- TUI e interface web (só depois do motor estar estável — agora M8 e M9).
 
 ---
 
@@ -44,7 +44,7 @@ E adiando:
 
 ## 3. Marcos
 
-> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → **M7 (TUI)** → **M8 (interface web)**.
+> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → **M7 (perguntas ao humano)** → **M8 (TUI)** → **M9 (interface web)**.
 >
 > O failover entre providers (M3) passa na frente do DAG multi-task (M2). É o diferencial que nenhum runtime externo de agent teams oferece, e funciona já em cima do graph do M1, que na prática é o `SingleAgentEngine` (ver seção 4.7). O M2 fica congelado até um triage rápido decidir se o `ApoNativeEngine` precisa mesmo da infraestrutura de times própria ou se parte dela pode vir de um runtime externo.
 >
@@ -152,7 +152,20 @@ E adiando:
 
 ---
 
-### M7 — TUI (~1 a 1,5 semana)
+### M7 — Perguntas ao humano (~1 semana)
+
+Quando um worker precisa de uma decisão que não é dele (produto, UX, pedido ambíguo), ele pergunta — e a pergunta chega a você, com opções e a recomendação do worker. Você responde, ou diz "decida você" e o Lead decide registrando o motivo. Absorve as perguntas bloqueantes adiadas do M2 (M2.19–M2.21).
+
+- O worker encerra o turno com a pergunta; a Task espera (`awaiting_answer`) e o resto da Feature segue. A resposta retoma a mesma sessão do agente.
+- Modos: `ask_human` (padrão), `lead_first` (o Lead tenta antes) e `auto` (o Lead sempre decide). **Interruptor de "noite toda":** `apo questions auto on|off`, ou por Feature (`apo run --auto-resolve`), ou por Project (`.apo/project.yaml`) — liga e desliga sem commit.
+- Com `auto`, nada para por pergunta, mas o PR continua esperando sua aprovação; de manhã, o report e o PR listam as decisões tomadas pelo Lead.
+- Decisões viram memória do Project, para a mesma dúvida não voltar.
+
+**Aceite:** uma pergunta real chega ao chat/painel, é respondida e o worker retoma usando a resposta; "decida você" e o modo `auto` levam a Feature até "Abrir o PR?" com as decisões registradas.
+
+---
+
+### M8 — TUI (~1 a 1,5 semana)
 
 Interface de terminal completa, evolução do `apo watch` (Phase 14 do PLAN.md). Hoje a visão é só leitura e as ações são comandos soltos; a TUI junta as duas coisas numa tela navegável por teclado.
 
@@ -166,7 +179,7 @@ Interface de terminal completa, evolução do `apo watch` (Phase 14 do PLAN.md).
 
 ---
 
-### M8 — Interface web (~2 a 3 semanas)
+### M9 — Interface web (~2 a 3 semanas)
 
 A mesma operação da TUI no navegador, servida pelo próprio daemon e acessível só pelo Tailscale — inclusive do celular. O ganho principal é aprovar e acompanhar longe do terminal.
 
