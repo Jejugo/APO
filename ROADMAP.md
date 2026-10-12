@@ -20,7 +20,7 @@ E adiando:
 
 - Jev (depende de serviço externo);
 - memória/pgvector (otimização sobre um sistema que já funciona);
-- TUI (só depois do motor estar estável).
+- TUI e interface web (só depois do motor estar estável — agora M7 e M8).
 
 ---
 
@@ -44,7 +44,7 @@ E adiando:
 
 ## 3. Marcos
 
-> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅.
+> **Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → **M7 (TUI)** → **M8 (interface web)**.
 >
 > O failover entre providers (M3) passa na frente do DAG multi-task (M2). É o diferencial que nenhum runtime externo de agent teams oferece, e funciona já em cima do graph do M1, que na prática é o `SingleAgentEngine` (ver seção 4.7). O M2 fica congelado até um triage rápido decidir se o `ApoNativeEngine` precisa mesmo da infraestrutura de times própria ou se parte dela pode vir de um runtime externo.
 >
@@ -152,9 +152,31 @@ E adiando:
 
 ---
 
-### Fora do roadmap por ora
+### M7 — TUI (~1 a 1,5 semana)
 
-**TUI (Phase 14)** — só depois do motor estar estável, conforme o próprio PLAN.md recomenda.
+Interface de terminal completa, evolução do `apo watch` (Phase 14 do PLAN.md). Hoje a visão é só leitura e as ações são comandos soltos; a TUI junta as duas coisas numa tela navegável por teclado.
+
+- Colunas Projects → Features → Tasks, painel de providers (capacidade, workers ativos, reset) e fluxo de eventos.
+- Agente da Task selecionada ao vivo (o mesmo stream do `apo task tail`).
+- Ações na própria tela: nova Feature/bugfix, aprovar, rejeitar com motivo, cancelar, pausar/retomar, reroute, preferência; chat com o Lead num painel.
+- Funciona local e remoto (`APO_URL`, Tailscale) e por SSH.
+- **Regra:** consome as mesmas APIs/eventos da CLI; nenhuma regra de negócio nova. Ações destrutivas (aprovar, rejeitar, cancelar) pedem confirmação.
+
+**Aceite:** uma Feature é criada, acompanhada (incluindo o agente ao vivo) e aprovada só pela TUI, do Mac e por SSH na VM.
+
+---
+
+### M8 — Interface web (~2 a 3 semanas)
+
+A mesma operação da TUI no navegador, servida pelo próprio daemon e acessível só pelo Tailscale — inclusive do celular. O ganho principal é aprovar e acompanhar longe do terminal.
+
+- SPA servida pelo daemon no listener do Tailscale (nunca na internet).
+- Login com o token do APO trocado por uma sessão em cookie `HttpOnly`/`SameSite=Strict`; o token nunca fica em URL nem em `localStorage`.
+- Telas: Projects, Features, detalhe da Feature (DAG de Tasks, gates por iteração, findings do review, requisitos, resumo de entrega, diff da integração, link do PR), agente ao vivo, providers/saúde, memória, chat com o Lead.
+- Ações: as mesmas da TUI, com confirmação nas destrutivas.
+- Mobile-first. Notificação quando uma Feature chega a "pronta para PR" (web push) é condicional, se o uso pedir.
+
+**Aceite:** pelo celular, uma Feature é criada, ajustada, revisada (gates, findings, diff) e aprovada até o PR, sem abrir terminal; nada acessível fora do Tailscale.
 
 ---
 

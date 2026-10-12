@@ -622,7 +622,7 @@ Com ele, failover, recovery, paralelismo, conflitos de merge e loops de review s
 
 Convenção: cada fase lista **entregas** (numeradas, cada uma do tamanho de um commit ou PR), **testes obrigatórios** e o **gate de saída**. As estimativas estão em semanas de um dev com agentes e somam o intervalo do ROADMAP.md.
 
-**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
+**Ordem de execução revisada (ADR 0003, pós-M1):** M0 ✅ → M1 ✅ → M3 ✅ → M2 ✅ → M4 ✅ → M5 ✅ → M6 ✅ → **M7 (TUI)** → **M8 (interface web)**. Os números das entregas não mudaram, para manter válidas as referências cruzadas (`M2.3`, `M3.7` etc.). O que mudou de marco por causa da nova ordem:
 
 | Entrega | De | Para | Motivo |
 |---|---|---|---|
@@ -1022,6 +1022,69 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 - **Visão ao vivo (pós-M6):** `apo watch <feature>` (painel interativo: Tasks, agentes, tempo, eventos; número + Enter abre o agente) e `apo task tail <task> [-f]` (arquivos, comandos, mensagens e custo do agente, ao vivo, trocando de attempt em failover). O Claude Code passou a `--output-format stream-json --verbose` (o evento final `result` é o mesmo objeto do modo `json`), e o log do attempt é gravado enquanto o CLI roda.
 - **Worker do Claude não rodava comandos (achado pelo `task tail`):** com `--permission-prompts none` e `acceptEdits`, todo Bash era negado desde o M1 — o worker entregava sem testar e só os quality gates pegavam os erros. Agora o worker de escrita recebe `--allowedTools Bash`; Lead, Reviewer e Tasks read continuam sem comandos. Na VM o sandbox do systemd confina a escrita a `/home/apo`; no daemon local do Mac (desenvolvimento) não há esse confinamento.
 - M6.10 (mensageria ao vivo) não construído: condicional e nenhum uso real pediu.
+
+---
+
+### M7 — TUI
+
+**Objetivo:** operar o APO por uma tela de terminal navegável — ver tudo e agir sem decorar comandos. Evolução do `apo watch` (pós-M6) e Phase 14 do PLAN.md.
+**Estimativa:** 1 a 1,5 semana.
+**Pré-requisito:** nenhum além do M6; usa só as APIs que o daemon já expõe.
+
+#### Entregas
+
+| # | Entrega | Detalhes |
+|---|---|---|
+| M7.1 | Base da TUI | Decidir a biblioteca no início (ADR): Ink (React para terminal, testável com `ink-testing-library`) ou renderização ANSI própria como o `apo watch`. Comando `apo tui`. Funciona com `APO_URL` (remoto) e por SSH; respeita redimensionamento e `NO_COLOR` |
+| M7.2 | Navegação | Colunas Projects → Features → Tasks, com status, agente, tempo e dependências. Atualização por polling curto ou SSE de eventos (reaproveitar `GET /features/:id/board`; criar um endpoint de visão geral por Project se o polling pesar) |
+| M7.3 | Providers e eventos | Painel de providers (`/health`, `apo providers`: disponibilidade, workers ativos, reset, Jev) e fluxo dos eventos da Feature selecionada |
+| M7.4 | Agente ao vivo | A Task selecionada mostra o stream de `GET /tasks/:id/live` com o mesmo formatador do `apo task tail` (`apps/cli/src/live/format.ts`) |
+| M7.5 | Ações | Nova Feature/bugfix (formulário com objetivo, intent, preferência), aprovar, rejeitar com motivo, cancelar, pausar/retomar, reroute de Task, preferência da Feature, `memory add`. Confirmação explícita em aprovar/rejeitar/cancelar |
+| M7.6 | Chat com o Lead | Painel com `POST /projects/:id/chat`; o resultado da ação aparece na lista sem recarregar |
+
+#### Testes obrigatórios
+
+- Renderização dos estados principais (Feature em execução, `awaiting_approval`, `needs_human`, failover) com dados de fixture.
+- Cada ação chama a rota certa com o payload certo; ações destrutivas não disparam sem confirmação.
+- Daemon fora do ar / token inválido → mensagem clara, sem travar a tela.
+
+#### Gate de saída
+
+- [ ] Uma Feature é criada, acompanhada (incluindo o agente ao vivo) e aprovada só pela TUI.
+- [ ] Funciona do Mac pelo Tailscale (`APO_URL`) e por SSH na VM.
+- [ ] Nenhuma regra de negócio nova: toda ação passa pelas rotas que a CLI já usa.
+
+---
+
+### M8 — Interface web
+
+**Objetivo:** a operação da TUI no navegador, acessível só pelo Tailscale — inclusive do celular — para acompanhar e aprovar longe do terminal.
+**Estimativa:** 2 a 3 semanas.
+**Pré-requisito:** M7 (as telas e ações já validadas na TUI viram o escopo da web).
+
+#### Entregas
+
+| # | Entrega | Detalhes |
+|---|---|---|
+| M8.1 | App web | `apps/web`, SPA buildada estática e servida pelo daemon **só no listener do Tailscale** (nunca no socket local, nunca na internet). Stack decidida no início (ADR); manter sem servidor próprio — o backend é o daemon |
+| M8.2 | Autenticação | Tela de login com o `APO_REMOTE_TOKEN` trocado por sessão em cookie `HttpOnly`, `Secure` quando houver HTTPS (Tailscale serve/cert), `SameSite=Strict`, com expiração; proteção CSRF nas rotas de escrita. O token nunca vai para URL, `localStorage` ou log |
+| M8.3 | Diff da integração | `GET /features/:id/diff` (diff da branch de integração contra a base, por arquivo, com limite de tamanho) |
+| M8.4 | Telas | Projects; Features (lista com status); detalhe da Feature (DAG de Tasks, gates por iteração, requisitos, findings do review, resumo de entrega, diff, link do PR); agente ao vivo (SSE de `/tasks/:id/live`); providers/saúde; memória do Project |
+| M8.5 | Ações | As mesmas do M7.5, com confirmação nas destrutivas; nova Feature/bugfix com o mesmo tratamento de sobreposição (`ask_user` → isolar/absorver) |
+| M8.6 | Chat com o Lead | Conversa do Project (`/projects/:id/chat`), com histórico |
+| M8.7 | Mobile | Layout mobile-first (celular no Tailscale). Notificação de "Feature pronta para PR" via web push é **condicional**: só se o uso mostrar que abrir a página não basta |
+
+#### Testes obrigatórios
+
+- E2E (ex.: Playwright) contra um daemon de teste com FakeHarness: login, criar Feature, ver Tasks e agente ao vivo, aprovar → PR fake.
+- Sem sessão → 401 em todas as rotas de escrita; CSRF rejeitado; sessão expirada pede login de novo.
+- O app não é servido no socket local nem em interface que não seja a do Tailscale.
+
+#### Gate de saída
+
+- [ ] Pelo celular, uma Feature é criada, ajustada, revisada (gates, findings, diff) e aprovada até o PR, sem abrir terminal.
+- [ ] Nada da interface acessível fora do Tailscale; token nunca exposto no navegador.
+- [ ] Nenhuma regra de negócio nova: a web usa as mesmas rotas da CLI/TUI.
 
 ---
 

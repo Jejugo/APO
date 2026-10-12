@@ -2120,6 +2120,28 @@ A TUI consome os mesmos APIs/events usados pela CLI.
 
 Não duplicar regras de negócio.
 
+
+---
+
+## Phase 15 — Interface web
+
+Depois da TUI, com as mesmas telas e ações.
+
+Servida pelo próprio daemon, acessível só pela rede privada (Tailscale), inclusive do celular:
+
+```text
+Features
+Products Page      AWAITING APPROVAL   [ver diff] [aprovar] [ajustar]
+Auth Refactor      EXECUTING           T2 Claude working · T3 Codex working
+
+Feature: Products Page
+Gates: build ✓  lint ✓  typecheck ✓  tests ✓
+Review: 0 problemas bloqueantes
+Diff: 6 arquivos
+```
+
+Mesmas regras da TUI: consome as mesmas APIs/events da CLI, não duplica regras de negócio, e aprovar continua sendo decisão humana explícita.
+
 ---
 
 # 36. O que NÃO construir na V1
