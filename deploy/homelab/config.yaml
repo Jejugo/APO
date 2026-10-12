@@ -18,4 +18,4 @@ memory:
 #   targets:
 #     - { id: claude-code, harness: claude-code, provider: anthropic }
 #     - { id: codex, harness: codex, provider: openai }
-#     - { id: antigravity, harness: antigravity, provider: google, model: gemini-3.8-flash-high, dangerouslySkipPermissions: true }
+#     - { id: antigravity, harness: antigravity, provider: google, model: gemini-3.8-flash-medium, dangerouslySkipPermissions: true }
