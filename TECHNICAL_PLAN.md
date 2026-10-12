@@ -978,6 +978,7 @@ No LangGraph, os `Send` de um superstep terminam juntos antes do próximo passo.
 - **Segredos:** a key fica em `~/.apo/secrets.env` (chmod 600), carregada só no processo do daemon; o `config.yaml` guarda só o nome da variável (`jev.apiKeyEnv`). Os workers não a recebem (allowlist de ambiente do M3).
 - **Embeddings:** ADR 0004 (transformers.js, `multilingual-e5-small`, 384 dimensões).
 - **MemoryWriter real:** ao aprovar a Feature do `slugify` (PR #2 no repo de teste), o Lead destilou 3 memórias — duas convenções e a falha de lint daquela Feature ("Biome rejeita faixa de combining marks literal em regex"), que é exatamente o tipo de tentativa falha que não deve se repetir.
+- **Indexação sem lote travou a VM (2026-10-12):** registrar na VM um Project com 238 docs (4.009 trechos; o maior arquivo gera 196) fez o `syncSource` mandar todos os trechos de um arquivo de uma vez ao ONNX. O daemon foi a ~9 GB de RSS numa VM de 11 GB, o swap encheu (load 54, iowait 49%) e o acesso por Tailscale/SSH caiu; a indexação nunca terminou. Reprodução no Mac: lote de 16 → pico de 1,2 GB; lote de 196 → 2,7 GB (com texto mais curto que o real). Correção: `embedInBatches` (lotes de 16, `EMBED_BATCH_SIZE`), pausa entre arquivos e limites no `apo.service` (`MemoryHigh=3G`, `MemoryMax=4G`, `MemorySwapMax=512M`, `CPUQuota=300%`, `IOWeight=50`), para que um vazamento futuro derrube só o daemon.
 
 ---
 

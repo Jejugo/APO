@@ -44,12 +44,33 @@ export class TransformersEmbeddingProvider implements EmbeddingProvider {
     if (texts.length === 0) return [];
     const extractor = await this.load();
     // O e5 foi treinado com prefixo de papel ("query:" / "passage:").
-    const output = await extractor(
-      texts.map((text) => `${role}: ${text}`),
-      { pooling: "mean", normalize: true },
-    );
-    return output.tolist();
+    return embedInBatches(texts, EMBED_BATCH_SIZE, async (batch) => {
+      const output = await extractor(
+        batch.map((text) => `${role}: ${text}`),
+        { pooling: "mean", normalize: true },
+      );
+      return output.tolist();
+    });
   }
+}
+
+/**
+ * Tamanho do lote enviado ao modelo. A memória do ONNX cresce com o lote: 196
+ * trechos de uma vez levaram o daemon a ~9 GB na VM (achado de 2026-10-12).
+ */
+export const EMBED_BATCH_SIZE = 16;
+
+/** Embeda em lotes sequenciais, preservando a ordem. */
+export async function embedInBatches(
+  texts: string[],
+  size: number,
+  embedBatch: (batch: string[]) => Promise<number[][]>,
+): Promise<number[][]> {
+  const vectors: number[][] = [];
+  for (let start = 0; start < texts.length; start += size) {
+    vectors.push(...(await embedBatch(texts.slice(start, start + size))));
+  }
+  return vectors;
 }
 
 /**

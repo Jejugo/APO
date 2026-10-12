@@ -32,6 +32,8 @@ export class MemoryService {
     const report: IngestReport = { files: docs.size, inserted: 0, kept: 0, removed: 0 };
     for (const [source, chunks] of docs) {
       const sync = await this.store.syncSource(projectId, source, "doc", chunks);
+      // Cede o event loop entre arquivos: a indexação roda dentro do daemon.
+      await new Promise((resolve) => setTimeout(resolve, 10));
       report.inserted += sync.inserted;
       report.kept += sync.kept;
       report.removed += sync.removed;

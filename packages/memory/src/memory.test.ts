@@ -9,7 +9,7 @@ import { type Db, ProjectRepository, createDb } from "@apo/db";
 import { execa } from "execa";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { chunkMarkdown } from "./chunking.js";
-import { HashingEmbeddingProvider } from "./embedding.js";
+import { HashingEmbeddingProvider, embedInBatches } from "./embedding.js";
 import { isIngestible } from "./ingest.js";
 import { MemoryService, renderMemories } from "./service.js";
 import { MemoryStore } from "./store.js";
@@ -38,6 +38,19 @@ describe("chunking e seleção de arquivos", () => {
     expect(isIngestible("src/notas.md")).toBeUndefined();
     expect(isIngestible("node_modules/a/README.md")).toBeUndefined();
     expect(isIngestible(".github/README.md")).toBeUndefined();
+  });
+});
+
+describe("embedInBatches", () => {
+  it("nunca passa mais que o tamanho do lote e preserva a ordem", async () => {
+    const sizes: number[] = [];
+    const texts = Array.from({ length: 40 }, (_, index) => String(index));
+    const vectors = await embedInBatches(texts, 16, async (batch) => {
+      sizes.push(batch.length);
+      return batch.map((text) => [Number(text)]);
+    });
+    expect(sizes).toEqual([16, 16, 8]);
+    expect(vectors.map((vector) => vector[0])).toEqual(texts.map(Number));
   });
 });
 

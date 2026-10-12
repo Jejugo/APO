@@ -24,6 +24,15 @@ RestartSec=5
 KillMode=control-group
 TimeoutStopSec=30
 
+# Limites de recursos: o APO divide a VM com paperless, grafana etc. Se o daemon
+# vazar memória (9 GB em 2026-10-12, indexação sem lote), o systemd o contém —
+# e só ele — em vez de a VM inteira entrar em thrash.
+MemoryHigh=3G
+MemoryMax=4G
+MemorySwapMax=512M
+CPUQuota=300%
+IOWeight=50
+
 # Hardening: o daemon (e os workers que ele lança) só escrevem em /home/apo;
 # o resto da máquina é só leitura e as outras homes nem aparecem.
 NoNewPrivileges=yes
