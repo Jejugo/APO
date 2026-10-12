@@ -1098,7 +1098,8 @@ O modo **não** muda a aprovação do PR: Features prontas continuam esperando o
 ### M8 — Cockpit (TUI)
 
 **Objetivo:** uma tela de terminal de "cockpit" para operar o APO: ver todos os agentes trabalhando (role, agente, estado), o orquestrador criando, trocando e encerrando agentes, a comunicação entre eles, e **entrar em qualquer agente** — acompanhar ao vivo, mandar uma mensagem ou assumir o controle no CLI interativo de verdade e depois devolver. Evolução do `apo watch` (pós-M6) e Phase 14 do PLAN.md.
-**Estimativa:** ~2,5 semanas.
+**Estimativa:** ~3 semanas.
+**Spike do M8.12 (antes de construir o painel de uso):** (1) o Codex (`exec --json`) e o agy informam tokens por attempt? em que campos?; (2) existe fonte oficial de uso agregado da assinatura (Claude Code, Codex, conta Google do agy) — comando, endpoint ou arquivo — estável e sem violar termos? Resultado em `spikes/usage.md`.
 **Pré-requisitos:** M7 (perguntas aparecem e são respondidas no cockpit). Spike de interrupção e controle: [`spikes/interrupt-resume.md`](./spikes/interrupt-resume.md) — mensagem ao agente e assumir/devolver funcionam no Claude Code e no Codex, com as regras das entregas M8.6 e M8.7.
 
 #### Modelo
@@ -1148,6 +1149,7 @@ Lead e Reviewer não são processos persistentes: aparecem como `working` durant
 | M8.9 | Ações | Nova Feature/bugfix (objetivo, intent, preferência), aprovar, rejeitar com motivo, cancelar, pausar/retomar, reroute de Task, preferência da Feature, `memory add`. Confirmação explícita em aprovar/rejeitar/cancelar/assumir |
 | M8.10 | Chat com o Lead | Painel com `POST /projects/:id/chat`; o resultado da ação aparece na tela sem recarregar |
 | M8.11 | Skill e docs | Comandos novos na skill `apo`; `docs/development.md` e `docs/homelab.md` com o fluxo de assumir na VM |
+| M8.12 | Uso e limites | Painel de consumo **medido pelo próprio APO** (nunca um percentual inventado): tokens (entrada, saída, cache, raciocínio) e custo por agente, Task, Feature e provider; acumulado na última hora, hoje e na semana; histórico de limites (quando cada provider bateu o teto, `resetAt`, quanto tinha sido consumido até ali). **Estimativa de folga**, sempre rotulada "estimativa": consumo desde o último reset comparado com o consumo em que o provider costumou bater o limite; só aparece depois de ≥ 3 ocorrências, senão mostra "sem dados". Exige registrar o uso por attempt (hoje só `cost`/`usage` dos resultados do Claude e do agy; o Codex precisa de verificação) numa tabela `usage_records` (provider, target, attempt, tokens por tipo, custo, `captured_at`). Não cobre o uso feito fora do APO. Se o spike abaixo achar uma fonte oficial de uso agregado por provider, ela vira o valor real e a estimativa fica de reserva |
 
 #### Testes obrigatórios
 
@@ -1156,6 +1158,7 @@ Lead e Reviewer não são processos persistentes: aparecem como `working` durant
 - Assumir: Task em `taken_over` não é executada pelo runner nem pelo recovery; devolver retoma a mesma sessão pedindo o relatório; restart do daemon com Task assumida mantém o estado.
 - Comando de assumir do Codex sempre com `--no-daemon` (teste em `packages/harnesses`).
 - Cada ação chama a rota certa; ações destrutivas e assumir não disparam sem confirmação.
+- Uso: `usage_records` é gravado por attempt (incluindo falha e failover); somas por janela batem com os attempts; sem dados suficientes, a estimativa não aparece (nunca um número inventado); o painel diferencia "medido" de "estimativa".
 - Daemon fora do ar / token inválido → mensagem clara, sem travar a tela.
 
 #### Gate de saída
@@ -1164,6 +1167,7 @@ Lead e Reviewer não são processos persistentes: aparecem como `working` durant
 - [ ] Real: mensagem a um worker no meio do trabalho → ele é interrompido, retoma a mesma sessão seguindo a mensagem e a Task conclui.
 - [ ] Real: do Mac, assumir um worker que roda na VM, conversar com ele no CLI interativo, devolver → o APO segue com gates e review até "Abrir o PR?".
 - [ ] Uma Feature é criada, acompanhada e aprovada só pelo cockpit, pelo Tailscale (`APO_URL`) e por SSH na VM.
+- [ ] Real: o painel de uso mostra tokens e custo por provider batendo com os attempts reais da semana, e o último limite atingido com seu `resetAt`; a estimativa aparece rotulada, ou "sem dados".
 - [ ] Nenhuma regra de negócio dentro da TUI: toda ação passa por rotas do daemon, também usadas pela CLI.
 
 ---

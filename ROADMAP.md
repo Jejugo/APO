@@ -165,7 +165,7 @@ Quando um worker precisa de uma decisão que não é dele (produto, UX, pedido a
 
 ---
 
-### M8 — Cockpit (TUI) (~2,5 semanas)
+### M8 — Cockpit (TUI) (~3 semanas)
 
 Uma tela de "cockpit" no terminal, evolução do `apo watch` (Phase 14 do PLAN.md): ver todos os agentes trabalhando e entrar em qualquer um deles. Hoje a visão é só leitura e as ações são comandos soltos; o cockpit junta tudo numa tela navegável por teclado.
 
@@ -175,6 +175,7 @@ Uma tela de "cockpit" no terminal, evolução do `apo watch` (Phase 14 do PLAN.m
 - **Entrar no agente**: stream ao vivo, tentativas, pergunta pendente, diff.
 - **Mensagem ao agente**: interrompe e retoma a mesma sessão com o texto do usuário (sem contar como falha).
 - **Assumir e devolver**: abre o CLI interativo de verdade (Claude/Codex) na sessão do worker — local ou na VM por SSH — e, ao devolver, o APO segue com gates e review. Validado no [spike](./spikes/interrupt-resume.md).
+- **Uso e limites**: tokens e custo medidos por agente, Task, Feature e provider (hora, dia, semana), histórico de limites com `resetAt` e uma estimativa de folga rotulada como estimativa — nenhum CLI expõe o quanto falta, então o APO não inventa percentual.
 - Perguntas do M7, ações (nova Feature, aprovar, rejeitar, cancelar, pausar, reroute) e chat com o Lead na própria tela.
 - **Regra:** consome as APIs/eventos do daemon (também usados pela CLI); nenhuma regra de negócio na TUI. Ações destrutivas e assumir pedem confirmação.
 
