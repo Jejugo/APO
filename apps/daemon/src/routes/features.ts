@@ -14,6 +14,7 @@ import {
   checkFeatureOverlap,
   findTarget,
   planFeature,
+  syncBaseBranch,
   triageIntent,
   validatePlan,
 } from "@apo/orchestrator";
@@ -204,6 +205,15 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
     if (body.plan && validatePlan(body.plan).ok) {
       plan = body.plan;
     } else {
+      // A base em dia com o remoto antes de o Lead ler o repo (o graph repete
+      // isso ao criar a integração; aqui é para o planejamento ver o código atual).
+      const sync = await syncBaseBranch(project.repoPath, project.defaultBranch);
+      if (sync.status === "failed") {
+        deps.logger.warn(
+          { projectId: project.id, reason: sync.reason },
+          "não consegui atualizar a base do remoto",
+        );
+      }
       // M5.8/M5.9: ingestão incremental (só o que mudou desde a última) e
       // memória relevante ao objetivo para o planner. Falha aqui não impede
       // planejar.

@@ -1290,4 +1290,38 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     expect(done?.status).toBe("completed");
     expect(rows.every((task) => task.status === "completed")).toBe(true);
   }, 60_000);
+
+  it("Feature nova parte da base atualizada do remoto (merge feito no GitHub depois do clone)", async () => {
+    // origin "no GitHub" + o clone do APO (repoPath) já existente.
+    const origin = join(worktreesRoot, "origin.git");
+    await execa("git", ["clone", "--bare", "-q", repoPath, origin]);
+    await execa("git", ["remote", "add", "origin", origin], { cwd: repoPath });
+    await execa("git", ["fetch", "-q", "origin"], { cwd: repoPath });
+    // Alguém mergeia um PR no remoto; o clone do APO fica para trás.
+    const other = join(worktreesRoot, "outro-clone");
+    await execa("git", ["clone", "-q", origin, other]);
+    writeFileSync(join(other, "mergeado.txt"), "veio do PR anterior");
+    await execa("git", ["add", "."], { cwd: other });
+    await execa(
+      "git",
+      ["-c", "user.email=x@x", "-c", "user.name=x", "commit", "-qm", "merge do PR #1"],
+      { cwd: other },
+    );
+    await execa("git", ["push", "-q", "origin", "main"], { cwd: other });
+
+    const { feature, deps, input, integrationPath } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", [
+          { writeFile: { path: "novo.txt", content: "x" }, commit: "feat: novo" },
+        ]),
+      ],
+    });
+    await run(deps, input);
+
+    expect((await finalState(feature.id)).feature?.status).toBe("completed");
+    expect(existsSync(join(integrationPath, "mergeado.txt"))).toBe(true);
+    expect(existsSync(join(repoPath, "mergeado.txt"))).toBe(true);
+    const events = (await repos.events.listByFeature(feature.id)).map((event) => event.type);
+    expect(events).toContain("repo.synced");
+  });
 });

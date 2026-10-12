@@ -80,6 +80,46 @@ async function ensureWorktree(
   });
 }
 
+export type BaseSyncResult =
+  | { status: "updated" | "up_to_date"; from: string; to: string }
+  | { status: "no_remote" }
+  | { status: "failed"; reason: string };
+
+/**
+ * Traz a branch base do remoto antes de uma Feature nova começar. Sem isso,
+ * depois de um merge no GitHub a Feature seguinte partiria do código antigo do
+ * clone (achado no uso pelo homelab). Só fast-forward: o clone do APO é um
+ * espelho e nunca recebe commits locais na base; se divergir, não força nada.
+ */
+export async function syncBaseBranch(
+  repoPath: string,
+  baseBranch: string,
+): Promise<BaseSyncResult> {
+  return withRepoLock(repoPath, async () => {
+    const remote = await git(repoPath, ["remote", "get-url", "origin"]);
+    if (remote.exitCode !== 0) return { status: "no_remote" };
+    const fetched = await git(repoPath, ["fetch", "--quiet", "origin", baseBranch]);
+    if (fetched.exitCode !== 0)
+      return { status: "failed", reason: fetched.stderr.trim().slice(0, 300) };
+    const before = (await git(repoPath, ["rev-parse", baseBranch])).stdout.trim();
+    const current = (await git(repoPath, ["branch", "--show-current"])).stdout.trim();
+    // Base em checkout (o normal num clone): merge --ff-only atualiza ref e
+    // arquivos. Fora de checkout: atualiza só a ref, se for fast-forward.
+    const updated =
+      current === baseBranch
+        ? await git(repoPath, ["merge", "--ff-only", "--quiet", `origin/${baseBranch}`])
+        : await git(repoPath, ["fetch", "--quiet", "origin", `${baseBranch}:${baseBranch}`]);
+    if (updated.exitCode !== 0) {
+      return {
+        status: "failed",
+        reason: updated.stderr.trim().slice(0, 300) || "não é fast-forward",
+      };
+    }
+    const after = (await git(repoPath, ["rev-parse", baseBranch])).stdout.trim();
+    return { status: before === after ? "up_to_date" : "updated", from: before, to: after };
+  });
+}
+
 export async function ensureIntegrationWorktree(
   repoPath: string,
   worktreesRoot: string,

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 // ApoNativeEngine (ADR 0003): o graph de uma Feature.
 //
 //   triage → plan → execute_wave → handle_plan_changes ⇄ (próxima onda)
@@ -65,6 +66,7 @@ import {
   integrationBranchName,
   integrationWorktreePath,
   mergeIntoIntegration,
+  syncBaseBranch,
 } from "./worktree.js";
 
 export { DEFAULT_TASK_TIMEOUT_MS } from "./task-runner.js";
@@ -285,6 +287,19 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
       return { outcome: null, failureReason: null };
     })
     .addNode("plan", async (state) => {
+      // Feature nova: a integração vai nascer da base, então a base precisa
+      // estar em dia com o remoto. Na recovery (worktree já existe), não mexe.
+      if (!existsSync(integrationWorktreePath(state.worktreesRoot, state.featureId))) {
+        const sync = await syncBaseBranch(state.repoPath, state.defaultBranch);
+        if (sync.status === "failed" || sync.status === "updated") {
+          await emitEvent(deps.events, deps.logger, {
+            type: sync.status === "failed" ? "repo.sync_failed" : "repo.synced",
+            projectId: state.projectId,
+            featureId: state.featureId,
+            payload: { base: state.defaultBranch, ...sync },
+          });
+        }
+      }
       await ensureIntegrationWorktree(
         state.repoPath,
         state.worktreesRoot,

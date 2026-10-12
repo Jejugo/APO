@@ -39,9 +39,10 @@ export {
   integrationBranchName,
   integrationWorktreePath,
   mergeIntoIntegration,
+  syncBaseBranch,
   taskBranchName,
 } from "./worktree.js";
-export type { MergeResult } from "./worktree.js";
+export type { BaseSyncResult, MergeResult } from "./worktree.js";
 
 export { loadProjectConfig, prepareWorktree, verifyIntegration } from "./verify.js";
 export type { VerifyResult } from "./verify.js";
