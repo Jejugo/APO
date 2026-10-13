@@ -19,11 +19,22 @@ export const LimitsConfigSchema = z.object({
 // Targets disponíveis para o roteamento (M3.2, `ProviderRegistry`). Um target
 // é um harness + provider (+ modelo opcional). O id é o que aparece em
 // `--harness`, `apo providers` e `routing_decisions`.
+/** Para que serve o target (sugere o roteamento; ver docs/homelab.md). */
+export const TARGET_PURPOSES = ["planning", "complex", "everyday", "simple"] as const;
+
 export const ProviderTargetSchema = z.object({
   id: z.string().min(1),
   harness: z.enum(["claude-code", "codex", "gemini-cli", "antigravity", "fake"]),
   provider: z.enum(["anthropic", "openai", "google"]),
   model: z.string().optional(),
+  /** Nível de esforço de raciocínio passado ao CLI (`--effort` no Claude Code, `model_reasoning_effort` no Codex). */
+  effort: z.string().min(1).optional(),
+  /**
+   * Finalidade do target. `planning`: Lead, planner e Reviewer escolhem entre estes
+   * (e eles não pegam Tasks comuns, a menos que sejam o único target). `complex`,
+   * `everyday`, `simple`: dica de complexidade para o Jev.
+   */
+  bestFor: z.array(z.enum(TARGET_PURPOSES)).default([]),
   enabled: z.boolean().default(true),
   /**
    * Só `antigravity`: libera comandos de shell no worker (testes, install, git)
@@ -42,6 +53,7 @@ export const DEFAULT_PROVIDER_TARGETS: ProviderTarget[] = [
     harness: "claude-code",
     provider: "anthropic",
     enabled: true,
+    bestFor: [],
     dangerouslySkipPermissions: false,
   },
   {
@@ -49,6 +61,7 @@ export const DEFAULT_PROVIDER_TARGETS: ProviderTarget[] = [
     harness: "codex",
     provider: "openai",
     enabled: true,
+    bestFor: [],
     dangerouslySkipPermissions: false,
   },
 ];

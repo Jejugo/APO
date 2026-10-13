@@ -31,6 +31,9 @@ export function buildClaudeCodeArgs(
   if (input.model) {
     args.push("--model", input.model);
   }
+  if (input.effort) {
+    args.push("--effort", input.effort);
+  }
   if (input.outputSchema) {
     args.push("--json-schema", JSON.stringify(input.outputSchema));
   }

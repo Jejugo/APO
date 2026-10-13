@@ -18,6 +18,23 @@ describe("buildClaudeCodeArgs", () => {
     expect(args.slice(-2)).toEqual(["--add-dir", "/runs/a"]);
   });
 
+  it("model e effort viram --model e --effort", () => {
+    const args = buildClaudeCodeArgs({
+      ...base,
+      mode: "read-only",
+      model: "claude-opus-5-5",
+      effort: "high",
+    });
+    expect(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2)).toEqual([
+      "--model",
+      "claude-opus-5-5",
+    ]);
+    expect(args.slice(args.indexOf("--effort"), args.indexOf("--effort") + 2)).toEqual([
+      "--effort",
+      "high",
+    ]);
+  });
+
   it("read-only (Lead, Reviewer, Task read): modo plan e sem comandos", () => {
     const args = buildClaudeCodeArgs({ ...base, mode: "read-only" });
     expect(args).toContain("plan");

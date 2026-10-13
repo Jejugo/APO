@@ -50,6 +50,7 @@ export function buildJevPayload(input: SemanticRoutingInput, model: string) {
       provider: candidate.provider,
       harness: candidate.harness,
       model: candidate.model ?? "padrão do harness",
+      best_for: candidate.bestFor ?? [],
       capabilities,
       availability: capacity.availability,
       usage_percent: capacity.usagePercent ?? null,
@@ -97,7 +98,7 @@ export function buildJevPayload(input: SemanticRoutingInput, model: string) {
       target: {
         type: "choice",
         instructions:
-          "Which entry of `targets` should execute `task`? Judge technical fit first. When targets are similarly suitable, prefer the one with more headroom: lower usage_percent, available over degraded, fewer active_workers and recent_failures. Never pick an exhausted target. A busier target is acceptable only if it is clearly more capable for this task.",
+          "Which entry of `targets` should execute `task`? Judge technical fit first. When targets are similarly suitable, prefer the one with more headroom: lower usage_percent, available over degraded, fewer active_workers and recent_failures. Each target lists `best_for`: complex (hard implementation), everyday (typical tasks), simple (only small, well-delimited tasks). Match the task complexity to `best_for` and never send a complex task to a target that is only simple. An empty `best_for` means general purpose. Never pick an exhausted target. A busier target is acceptable only if it is clearly more capable for this task.",
         criteria: choices,
       },
       requires_review: {

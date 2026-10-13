@@ -59,6 +59,8 @@ export class AgentRunnerImpl implements AgentRunner {
   constructor(
     private readonly harness: AgentHarness,
     private readonly personas: Record<string, PersonaDefinition> = PERSONAS,
+    /** Modelo e esforço do target escolhido (sem isto, o CLI usa o modelo padrão dele). */
+    private readonly defaults: { model?: string | undefined; effort?: string | undefined } = {},
   ) {}
 
   async run<T>(
@@ -90,7 +92,10 @@ export class AgentRunnerImpl implements AgentRunner {
           outputSchema: jsonSchema,
           timeoutMs: input.timeoutMs,
           logPath: await agentRunnerLogPath(),
-          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.model !== undefined || this.defaults.model !== undefined
+            ? { model: (input.model ?? this.defaults.model) as string }
+            : {}),
+          ...(this.defaults.effort !== undefined ? { effort: this.defaults.effort } : {}),
         },
         signal,
       );

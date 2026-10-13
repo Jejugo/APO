@@ -35,6 +35,7 @@ import {
   type RoutingPolicy,
   type SemanticDecision,
   type TaskRouter,
+  executionCandidates,
   resolveExecutionTarget,
 } from "@apo/routing";
 import { z } from "zod";
@@ -309,6 +310,15 @@ export async function runTask(
   let semantic: SemanticDecision | undefined;
   let semanticError: string | undefined;
   let semanticTried = false;
+  // Targets só de planejamento (ex.: Opus) não pegam Tasks comuns.
+  const executionIds = new Set(
+    executionCandidates(deps.targets.map((entry) => entry.candidate)).map(
+      (candidate) => candidate.targetId,
+    ),
+  );
+  const executionTargets = deps.targets.filter((entry) =>
+    executionIds.has(entry.candidate.targetId),
+  );
   const semanticFor = async (taskPreference: ExecutionPreference | null) => {
     const overridden = [taskPreference, featurePreference, rolePreference].some(
       (preference) => preference && preference.mode !== "auto",
@@ -327,7 +337,7 @@ export async function runTask(
             origin: task.origin,
           },
           project: { name: basename(feature.repoPath) },
-          candidates: deps.targets.map((entry) => {
+          candidates: executionTargets.map((entry) => {
             const capabilities = entry.harness.getCapabilities();
             return {
               candidate: entry.candidate,
@@ -388,7 +398,7 @@ export async function runTask(
     const semanticDecision = resumeEntry ? undefined : await semanticFor(taskPreference);
     const resolve = (excluded: string[]) =>
       resolveExecutionTarget({
-        candidates: candidatesOf(deps.targets),
+        candidates: candidatesOf(executionTargets),
         capacity: capacityOf,
         taskPreference,
         featurePreference,
@@ -581,6 +591,7 @@ export async function runTask(
             }
           },
           ...(entry.candidate.model !== undefined ? { model: entry.candidate.model } : {}),
+          ...(entry.candidate.effort !== undefined ? { effort: entry.candidate.effort } : {}),
         });
       } finally {
         deps.capacity.workerFinished(entry.harness.provider);

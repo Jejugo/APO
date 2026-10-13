@@ -57,6 +57,8 @@ export function buildTargetRegistry(targets: ProviderTarget[], logger: Logger): 
         provider: target.provider,
         harness: target.harness,
         ...(target.model !== undefined ? { model: target.model } : {}),
+        ...(target.effort !== undefined ? { effort: target.effort } : {}),
+        ...(target.bestFor.length > 0 ? { bestFor: target.bestFor } : {}),
       },
       harness,
     });

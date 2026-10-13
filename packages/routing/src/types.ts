@@ -1,11 +1,15 @@
 import type { HarnessId, ProviderId } from "@apo/domain";
 
 /** Um target do `config.yaml` (M3.2). O id distingue dois targets com o mesmo harness. */
+export type TargetPurpose = "planning" | "complex" | "everyday" | "simple";
+
 export interface RoutingCandidate {
   targetId: string;
   provider: ProviderId;
   harness: HarnessId;
   model?: string;
+  effort?: string;
+  bestFor?: TargetPurpose[];
 }
 
 export type ProviderAvailability = "available" | "degraded" | "exhausted" | "unknown";

@@ -5,7 +5,7 @@
 // ele for o único com capacidade.
 
 import type { ProviderId } from "@apo/domain";
-import { type RoutingPolicy, resolveExecutionTarget } from "@apo/routing";
+import { type RoutingPolicy, type TargetPurpose, resolveForPurpose } from "@apo/routing";
 import { AgentRunnerImpl } from "./agent-runner.js";
 import type { ExecutionTargetEntry, TargetRegistry } from "./harness-registry.js";
 import type { EngineDeps } from "./task-runner.js";
@@ -15,20 +15,32 @@ export interface Judge {
   runner: AgentRunnerImpl;
 }
 
+/** Runner de julgamento com o modelo e o esforço do target escolhido. */
+export function runnerFor(entry: ExecutionTargetEntry): AgentRunnerImpl {
+  return new AgentRunnerImpl(entry.harness, undefined, {
+    model: entry.candidate.model,
+    effort: entry.candidate.effort,
+  });
+}
+
 export function pickJudge(
   deps: Pick<EngineDeps, "targets" | "capacity"> & { routingPolicy?: RoutingPolicy | undefined },
   avoidProvider?: ProviderId,
+  purpose: TargetPurpose = "planning",
 ): Judge | undefined {
   const structured: TargetRegistry = deps.targets.filter(
     (entry) => entry.harness.getCapabilities().supportsOutputSchema,
   );
   const resolve = (exclude: string[]) =>
-    resolveExecutionTarget({
-      candidates: structured.map((entry) => entry.candidate),
-      capacity: (provider) => deps.capacity.get(provider),
-      exclude,
-      ...(deps.routingPolicy ? { policy: deps.routingPolicy } : {}),
-    });
+    resolveForPurpose(
+      {
+        candidates: structured.map((entry) => entry.candidate),
+        capacity: (provider) => deps.capacity.get(provider),
+        exclude,
+        ...(deps.routingPolicy ? { policy: deps.routingPolicy } : {}),
+      },
+      purpose,
+    );
   const avoided = avoidProvider
     ? structured
         .filter((entry) => entry.candidate.provider === avoidProvider)
@@ -39,7 +51,7 @@ export function pickJudge(
   if (resolved.kind !== "target") return undefined;
   const targetId = resolved.target.targetId;
   const entry = structured.find((candidate) => candidate.candidate.targetId === targetId);
-  return entry ? { entry, runner: new AgentRunnerImpl(entry.harness) } : undefined;
+  return entry ? { entry, runner: runnerFor(entry) } : undefined;
 }
 
 const CAPACITY_KINDS = new Set(["rate_limited", "quota_exhausted", "auth"]);
@@ -63,9 +75,10 @@ export async function withJudge<T>(
     error?: string;
     failure?: { kind: string; message: string; resetAt?: Date };
   }>,
+  purpose: TargetPurpose = "planning",
 ): Promise<JudgedResult<T>> {
   for (let tries = 0; tries < Math.max(1, deps.targets.length); tries += 1) {
-    const judge = pickJudge(deps, avoidProvider);
+    const judge = pickJudge(deps, avoidProvider, purpose);
     if (!judge)
       return { kind: "no_capacity", reason: "nenhum provider com capacidade para julgar" };
     const result = await attempt(judge);

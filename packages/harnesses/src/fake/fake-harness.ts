@@ -41,6 +41,8 @@ export class FakeHarness implements AgentHarness {
   private cursor = 0;
   /** Prompts recebidos, na ordem — permite verificar o PromptBuilder nos testes. */
   readonly receivedPrompts: string[] = [];
+  /** Inputs completos (modelo, esforço, modo…), na ordem. */
+  readonly receivedInputs: AgentExecutionInput[] = [];
 
   constructor(options: FakeHarnessOptions) {
     this.provider = options.provider ?? "anthropic";
@@ -70,6 +72,7 @@ export class FakeHarness implements AgentHarness {
     }
 
     this.receivedPrompts.push(input.prompt);
+    this.receivedInputs.push(input);
     // `respond` escolhe o passo pelo input — necessário quando várias Tasks
     // rodam em paralelo no mesmo harness e a ordem das chamadas não é fixa.
     const step: FakeHarnessStep = this.respond?.(input) ??

@@ -2,7 +2,12 @@
 // allowlist, nunca denylist. Segredos do daemon (DATABASE_URL, JEV_API_KEY,
 // GITHUB_TOKEN...) nunca chegam ao worker.
 //
-// Além de HOME/PATH/SHELL/TERM/NODE_ENV (lista original da seção 6.3), entram
+// NODE_ENV fica de FORA de propósito: é do daemon (production na VM), não do
+// projeto que ele opera. Repassá-lo fazia os testes dos workers e dos gates
+// rodarem em production e divergirem do CI (achado de 2026-10-13: o APO
+// oscilava entre adicionar e remover vi.stubEnv). Cada ferramenta define o seu.
+//
+// Além de HOME/PATH/SHELL/TERM (lista original da seção 6.3), entram
 // USER/LOGNAME/LANG/LC_ALL/TMPDIR: no macOS, os CLIs leem credenciais do
 // keychain do usuário e escrevem em $TMPDIR — sem essas variáveis a auth OAuth
 // do Claude Code e do Codex pode falhar.
@@ -12,7 +17,6 @@ const BASE_ALLOWLIST = [
   "PATH",
   "SHELL",
   "TERM",
-  "NODE_ENV",
   "USER",
   "LOGNAME",
   "LANG",

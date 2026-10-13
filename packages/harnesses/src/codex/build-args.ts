@@ -49,6 +49,10 @@ export function buildCodexArgs(input: AgentExecutionInput, options: CodexArgsOpt
   if (input.model) {
     args.push("-m", input.model);
   }
+  // `--ignore-user-config` ignora o config.toml, então o esforço vai por -c.
+  if (input.effort) {
+    args.push("-c", `model_reasoning_effort="${input.effort}"`);
+  }
   if (options.outputSchemaPath) {
     args.push("--output-schema", options.outputSchemaPath);
   }

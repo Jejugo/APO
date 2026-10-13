@@ -58,6 +58,8 @@ exit
 sudo systemctl restart apo
 ```
 
+**Targets por modelo e finalidade:** cada item de `providers.targets` pode fixar `model`, `effort` e `bestFor` (ver o bloco comentado em `deploy/homelab/config.yaml`). planner, replanejamento, perguntas, Reviewer e o chat do Lead escolhem entre os `planning`, enquanto triagem, sobreposição, resumos e memória usam os `everyday` (com failover para os demais se nenhum estiver utilizável); os `planning`-only não pegam Tasks comuns; o Jev vê o `bestFor` de cada target e casa com a complexidade da Task. Capacidade e o limite de workers são por **provider**, então targets do mesmo provider dividem a cota. O config só vale depois de `sudo systemctl restart apo`.
+
 Com `dangerouslySkipPermissions: true`, o worker do `agy` roda comandos e não confina a escrita à worktree; na VM, o sandbox do systemd limita a escrita a `/home/apo`.
 
 Jev (opcional): adicione a key ao `secrets.env` do `apo`, sem colar no histórico do shell:
@@ -91,7 +93,7 @@ Registrar um projeto na VM: clone em `/home/apo/projects` como `apo` e `apo proj
 ## Recuperação
 
 - **Restart/boot:** o serviço sobe sozinho (`enable`), mata workers órfãos (M6.8), remove worktrees de Features encerradas, marca attempts `working` como `interrupted` e retoma as Features ativas a partir do checkpoint (M1.13). Features em `awaiting_approval` continuam esperando `apo approve|reject`.
-- **Limites de recursos:** o `apo.service` tem `MemoryHigh=3G`, `MemoryMax=4G`, `MemorySwapMax=512M`, `CPUQuota=300%` e `IOWeight=50`. Se o daemon estourar, o systemd o reinicia sozinho (`Restart=on-failure`) e o resto da VM não sente. Ver o uso: `systemctl status apo` (linha `Memory:`) ou `systemd-cgtop`.
+- **Limites de recursos:** o `apo.service` tem `MemoryHigh=4G`, `MemoryMax=5G`, `MemorySwapMax=512M`, `CPUQuota=300%` e `IOWeight=50`. Se o daemon estourar, o systemd o reinicia sozinho (`Restart=on-failure`) e o resto da VM não sente. Ver o uso: `systemctl status apo` (linha `Memory:`) ou `systemd-cgtop`.
 - **Restaurar backup:** `sudo systemctl stop apo; sudo -u postgres dropdb apo; sudo -u postgres createdb -O apo apo; sudo -u postgres psql -d apo -c 'CREATE EXTENSION vector'; gunzip -c ~apo/backups/apo-AAAA-MM-DD.sql.gz | sudo -u apo psql "$DATABASE_URL"; sudo systemctl start apo`.
 
 ## Isolamento (gate do M6)

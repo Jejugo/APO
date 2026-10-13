@@ -9,6 +9,12 @@ export {
   type ResolveInput,
   type ResolveResult,
 } from "./resolver.js";
+export {
+  executionCandidates,
+  hasPurpose,
+  resolveForPlanning,
+  resolveForPurpose,
+} from "./purpose.js";
 export { routeTask, type RouteInput, type RouteResult } from "./rule-based-router.js";
 export {
   type CapacityFailureKind,
@@ -17,6 +23,7 @@ export {
   type ProviderCapacitySnapshot,
   type RoutingCandidate,
   type RoutingPolicy,
+  type TargetPurpose,
 } from "./types.js";
 export {
   applyCapacityPolicy,

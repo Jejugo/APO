@@ -345,7 +345,8 @@ export function registerChatRoutes(app: FastifyInstance, deps: ServerDeps): void
     const pending = await deps.conversations.unsummarized(thread.id, thread.summarizedUntil);
     if (pending.length <= SUMMARIZE_AFTER) return;
     const old = pending.slice(0, pending.length - RECENT_MESSAGES);
-    const judge = pickJudge(deps);
+    // Resumo da conversa: tarefa leve, fora do tier de planejamento.
+    const judge = pickJudge(deps, undefined, "everyday");
     const last = old.at(-1);
     if (!judge || !last) return;
     const summary = await summarizeConversation(

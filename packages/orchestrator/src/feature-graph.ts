@@ -936,7 +936,8 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
       // M5.10 — falhar aqui nunca muda o resultado da Feature.
       if (state.outcome !== "success" || !deps.memory) return {};
       try {
-        const judge = pickJudge(deps);
+        // Destilar memórias é resumo: não precisa do tier de planejamento.
+        const judge = pickJudge(deps, undefined, "everyday");
         if (!judge) return {};
         const feature = await deps.features.getById(state.featureId);
         const rows = await deps.qualityResults.listByFeature(state.featureId);

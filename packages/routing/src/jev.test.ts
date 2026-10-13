@@ -96,6 +96,17 @@ describe("JevTaskRouter", () => {
     expect(Object.keys(payload.questions.target.criteria)).toEqual(["alpha", "beta"]);
   });
 
+  it("payload: cada target leva o best_for (finalidade) e a instrução o menciona", () => {
+    const withPurpose = input({ title: "t" });
+    const [first] = withPurpose.candidates;
+    if (first) first.candidate = { ...first.candidate, bestFor: ["simple"] };
+    const payload = buildJevPayload(withPurpose, "m");
+    const targets = payload.state.targets as Record<string, { best_for: string[] }>;
+    expect(targets.alpha?.best_for).toEqual(["simple"]);
+    expect(targets.beta?.best_for).toEqual([]);
+    expect(payload.questions.target.instructions).toContain("best_for");
+  });
+
   it("converte a resposta: níveis, ranking por probabilidade, review", async () => {
     const jev = fakeJev({
       complexity: { type: "score", score: 2, legend: {}, probabilities: {}, confidence: 1 },

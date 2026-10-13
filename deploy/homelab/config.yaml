@@ -12,10 +12,17 @@ jev:
   enabled: true
 memory:
   enabled: true
-# Antigravity (agy) é opt-in: instale com WITH_AGY=1 no install.sh, faça o login
-# como apo e descomente. Listar targets substitui o padrão: mantenha claude e codex.
+# Targets por modelo e finalidade (bestFor). Listar targets substitui o padrão.
+#   planning : planner, replanejamento, perguntas, Reviewer e chat do Lead (não pegam Tasks comuns)
+#   everyday : também triagem, sobreposição, resumos e memória do Lead (chamadas leves)
+#   complex / everyday / simple : dica de complexidade para o Jev (everyday também vale para as chamadas leves do Lead)
+# `effort` vai para o CLI (--effort no Claude Code, model_reasoning_effort no Codex).
+# O Antigravity (agy) é opt-in: instale com WITH_AGY=1 no install.sh e faça o login como apo.
 # providers:
 #   targets:
-#     - { id: claude-code, harness: claude-code, provider: anthropic }
-#     - { id: codex, harness: codex, provider: openai }
-#     - { id: antigravity, harness: antigravity, provider: google, model: gemini-3.8-flash-medium, dangerouslySkipPermissions: true }
+#     - { id: claude-opus,   harness: claude-code, provider: anthropic, model: claude-opus-5-5,   bestFor: [planning] }
+#     - { id: claude-sonnet, harness: claude-code, provider: anthropic, model: claude-sonnet-5-5, bestFor: [complex] }
+#     - { id: claude-haiku,  harness: claude-code, provider: anthropic, model: claude-haiku-5-5,  bestFor: [everyday] }
+#     - { id: codex-sol,     harness: codex, provider: openai, model: gpt-6.1-sol, effort: xhigh, bestFor: [planning, complex] }
+#     - { id: codex-luna,    harness: codex, provider: openai, model: gpt-6-luna,  effort: xhigh, bestFor: [everyday] }
+#     - { id: antigravity,   harness: antigravity, provider: google, model: gemini-3.8-flash-low, bestFor: [simple], dangerouslySkipPermissions: true }

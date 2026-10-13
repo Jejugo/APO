@@ -36,6 +36,8 @@ export interface AgentExecutionInput {
    * rede (ver `AgentCapabilities.supportsNetworkToggle`). */
   networkAccess: boolean;
   model?: string;
+  /** Esforço de raciocínio do modelo (ex.: "high", "xhigh"); o CLI valida o valor. */
+  effort?: string;
   outputSchema?: JsonSchema;
   /** Obrigatório — ver TECHNICAL_PLAN.md seção 6.1: credencial inválida não
    * falha rápido em nenhum dos dois CLIs reais (~4,4min no Claude Code, ~10-15s

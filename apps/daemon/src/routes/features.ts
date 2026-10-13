@@ -4,7 +4,6 @@ import type { ExecutionPreference } from "@apo/domain";
 import { renderMemories } from "@apo/memory";
 import { emitEvent } from "@apo/observability";
 import {
-  AgentRunnerImpl,
   type ApprovalDecision,
   DEFAULT_TASK_TIMEOUT_MS,
   type FeaturePlan,
@@ -14,11 +13,12 @@ import {
   checkFeatureOverlap,
   findTarget,
   planFeature,
+  runnerFor,
   syncBaseBranch,
   triageIntent,
   validatePlan,
 } from "@apo/orchestrator";
-import { resolveExecutionTarget } from "@apo/routing";
+import { type TargetPurpose, resolveForPurpose } from "@apo/routing";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ServerDeps } from "../server-deps.js";
@@ -133,25 +133,36 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
     // julgamento (triage/pergunta), a escolha do usuário vale só como
     // preferência — senão um forced num provider esgotado barraria a criação
     // da Feature, em vez de ela ir para needs_human como o modo forced pede.
-    const leadTarget = resolveExecutionTarget({
-      // O Lead depende de saída estruturada; targets sem isso (agy) ficam de fora.
-      candidates: candidatesOf(
-        deps.targets.filter((entry) => entry.harness.getCapabilities().supportsOutputSchema),
-      ),
-      capacity: (provider) => deps.capacity.get(provider),
-      featurePreference: preference ? { ...preference, mode: "preferred" } : null,
-      policy: deps.routingPolicy,
-    });
-    if (leadTarget.kind !== "target") {
+    // Finalidade por chamada: triagem, perguntas e checagem de sobreposição são
+    // classificações leves (`everyday`); só o planner usa o tier de planejamento.
+    const leadFor = (purpose: TargetPurpose) => {
+      const resolved = resolveForPurpose(
+        {
+          // O Lead depende de saída estruturada; targets sem isso (agy) ficam de fora.
+          candidates: candidatesOf(
+            deps.targets.filter((entry) => entry.harness.getCapabilities().supportsOutputSchema),
+          ),
+          capacity: (provider) => deps.capacity.get(provider),
+          featurePreference: preference ? { ...preference, mode: "preferred" } : null,
+          policy: deps.routingPolicy,
+        },
+        purpose,
+      );
+      if (resolved.kind !== "target") {
+        return { error: "nenhum provider disponível para o Lead agora", reason: resolved.reason };
+      }
+      const entry = findTarget(deps.targets, resolved.target.targetId);
+      return entry
+        ? { runner: runnerFor(entry), entry }
+        : { error: "target do Lead sem harness registrado", reason: resolved.target.targetId };
+    };
+    const light = leadFor("everyday");
+    if (!light.runner) {
       reply.code(503);
-      return { error: "nenhum provider disponível para o Lead agora", reason: leadTarget.reason };
+      return { error: light.error, reason: light.reason };
     }
-    const leadEntry = findTarget(deps.targets, leadTarget.target.targetId);
-    if (!leadEntry) {
-      reply.code(500);
-      return { error: "target do Lead sem harness registrado" };
-    }
-    const agentRunner = new AgentRunnerImpl(leadEntry.harness);
+    const agentRunner = light.runner;
+    const leadEntry = light.entry;
     const controller = new AbortController();
 
     const triage = await triageIntent(
@@ -236,8 +247,13 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
           deps.logger.warn({ error, projectId: project.id }, "memória indisponível para o planner");
         }
       }
+      const heavy = leadFor("planning");
+      if (!heavy.runner) {
+        reply.code(503);
+        return { error: heavy.error, reason: heavy.reason };
+      }
       const planned = await planFeature(
-        agentRunner,
+        heavy.runner,
         {
           objective: body.objective,
           intent,

@@ -103,7 +103,7 @@ export {
   summarizeConversation,
 } from "./lead-chat.js";
 export type { ChatContext, LeadAction } from "./lead-chat.js";
-export { pickJudge } from "./judge.js";
+export { pickJudge, runnerFor } from "./judge.js";
 export { replanFeature } from "./replan.js";
 export type { ReplanInput, ReplanResult } from "./replan.js";
 

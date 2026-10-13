@@ -6,6 +6,26 @@ import { AgentRunnerImpl } from "./agent-runner.js";
 const schema = z.object({ answer: z.string() });
 
 describe("AgentRunnerImpl", () => {
+  it("passa ao harness o modelo e o esforço do target (Lead/Reviewer), e o input da chamada vence", async () => {
+    const harness = new FakeHarness({
+      script: [
+        { succeed: { structuredOutput: { answer: "a" } } },
+        { succeed: { structuredOutput: { answer: "b" } } },
+      ],
+    });
+    const runner = new AgentRunnerImpl(harness, undefined, {
+      model: "claude-opus-5-5",
+      effort: "high",
+    });
+    const call = { prompt: "p", cwd: "/tmp", schema, timeoutMs: 5_000 };
+    await runner.run("lead", call, new AbortController().signal);
+    await runner.run("lead", { ...call, model: "outro" }, new AbortController().signal);
+    expect(harness.receivedInputs.map((input) => [input.model, input.effort])).toEqual([
+      ["claude-opus-5-5", "high"],
+      ["outro", "high"],
+    ]);
+  });
+
   it("retorna outcome success com a saída validada pelo zod", async () => {
     const harness = new FakeHarness({
       script: [{ succeed: { structuredOutput: { answer: "ok" } } }],
