@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { daemonRequest } from "../daemon-client.js";
+import { resolveProjectRef } from "../project-ref.js";
 
 interface RoleRow {
   id: string;
@@ -18,9 +19,11 @@ export function registerRoleCommands(program: Command): void {
   role
     .command("list")
     .description("Lista os roles resolvidos para o Project")
-    .requiredOption("--project <id>", "id do Project")
+    .requiredOption("--project <id|nome>", "id ou nome do Project (veja 'apo project list')")
     .action(async (options: { project: string }) => {
-      const roles = await daemonRequest<RoleRow[]>(`/projects/${options.project}/roles`);
+      const roles = await daemonRequest<RoleRow[]>(
+        `/projects/${await resolveProjectRef(options.project)}/roles`,
+      );
       for (const row of roles) {
         console.log(
           `${row.id.padEnd(22)} ${row.name}${row.description ? ` — ${row.description}` : ""}`,
@@ -31,9 +34,11 @@ export function registerRoleCommands(program: Command): void {
   role
     .command("show <id>")
     .description("Mostra o systemPrompt e a preferência de execução efetivos de um role")
-    .requiredOption("--project <id>", "id do Project")
+    .requiredOption("--project <id|nome>", "id ou nome do Project (veja 'apo project list')")
     .action(async (id: string, options: { project: string }) => {
-      const roles = await daemonRequest<RoleRow[]>(`/projects/${options.project}/roles`);
+      const roles = await daemonRequest<RoleRow[]>(
+        `/projects/${await resolveProjectRef(options.project)}/roles`,
+      );
       const found = roles.find((row) => row.id === id);
       if (!found) {
         console.error(

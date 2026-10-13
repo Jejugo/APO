@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
 import { DaemonHttpError, daemonRequest } from "../daemon-client.js";
+import { resolveProjectRef } from "../project-ref.js";
 
 interface FeatureRow {
   id: string;
@@ -62,7 +63,7 @@ export function registerRunCommand(program: Command): void {
   program
     .command("run <objective>")
     .description("Leva um objetivo até código commitado (ou responde direto, se for uma pergunta)")
-    .requiredOption("--project <id>", "id do Project (veja 'apo project list')")
+    .requiredOption("--project <id|nome>", "id ou nome do Project (veja 'apo project list')")
     // Pendente de confirmação (TECHNICAL_PLAN.md seção 11): resolução via cwd
     // ainda não foi decidida com o usuário — por isso --project é obrigatório
     // no M1, sem fallback silencioso.
@@ -81,7 +82,7 @@ export function registerRunCommand(program: Command): void {
         return;
       }
       const body = {
-        projectId: options.project,
+        projectId: await resolveProjectRef(options.project),
         objective,
         ...(options.harness !== undefined ? { harness: options.harness } : {}),
         ...(options.prefer !== undefined ? { prefer: options.prefer } : {}),

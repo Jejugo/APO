@@ -10,8 +10,15 @@ import type { ServerDeps } from "../server-deps.js";
 
 // A validação do repo acontece aqui, no disco do daemon: com a CLI remota
 // (Mac → VM), o caminho só existe na máquina do daemon.
+const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const createProjectSchema = z.object({
-  name: z.string().min(1).optional(),
+  // O nome é como `--project <nome>` encontra o Project: sem espaços, e nunca
+  // parecido com um id (a CLI trataria como UUID).
+  name: z
+    .string()
+    .regex(/^[A-Za-z0-9._-]+$/, "use só letras, números, ponto, hífen e sublinhado")
+    .refine((value) => !UUID_LIKE.test(value), "o nome não pode parecer um id (UUID)")
+    .optional(),
   repoPath: z.string().min(1),
   defaultBranch: z.string().min(1).optional(),
   configSnapshot: z.record(z.string(), z.unknown()).optional(),
@@ -54,13 +61,24 @@ export function registerProjectRoutes(app: FastifyInstance, deps: ServerDeps): v
       reply.code(200);
       return { ...existing, existing: true };
     }
+    // Nome único (sem diferenciar maiúsculas): é a referência de `--project <nome>`.
+    const name = body.name ?? basename(body.repoPath);
+    const sameName = (await deps.projects.list()).find(
+      (row) => row.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (sameName) {
+      reply.code(409);
+      return {
+        error: `já existe o Project "${sameName.name}" (${sameName.repoPath}); registre este com outro nome: apo project add <caminho> --name <nome>`,
+      };
+    }
     const configSnapshot =
       body.configSnapshot ??
       loadConfig(join(body.repoPath, ".apo", "project.yaml"), ProjectConfigSchema);
     const defaultBranch = body.defaultBranch ?? (await detectDefaultBranch(body.repoPath));
     const project = await deps.projects.create({
       id: randomUUID(),
-      name: body.name ?? basename(body.repoPath),
+      name,
       repoPath: body.repoPath,
       defaultBranch,
       configSnapshot,

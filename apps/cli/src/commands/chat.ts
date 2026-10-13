@@ -5,6 +5,7 @@
 import { createInterface } from "node:readline/promises";
 import type { Command } from "commander";
 import { DaemonHttpError, daemonRequest } from "../daemon-client.js";
+import { resolveProjectRef } from "../project-ref.js";
 
 interface ChatResponse {
   reply: string;
@@ -49,10 +50,10 @@ export function registerChatCommand(program: Command): void {
   program
     .command("chat [mensagem]")
     .description("Conversa com o Lead do Project (sem mensagem abre o modo interativo)")
-    .requiredOption("--project <id>", "id do Project")
+    .requiredOption("--project <id|nome>", "id ou nome do Project (veja 'apo project list')")
     .action(async (message: string | undefined, options: { project: string }) => {
       if (message) {
-        await send(options.project, message);
+        await send(await resolveProjectRef(options.project), message);
         return;
       }
       console.log("Conversando com o Lead. /historico mostra a conversa, /sair encerra.");
@@ -63,10 +64,10 @@ export function registerChatCommand(program: Command): void {
           if (!line) continue;
           if (line === "/sair" || line === "/exit") break;
           if (line === "/historico") {
-            await history(options.project);
+            await history(await resolveProjectRef(options.project));
             continue;
           }
-          await send(options.project, line);
+          await send(await resolveProjectRef(options.project), line);
         }
       } finally {
         rl.close();

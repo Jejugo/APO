@@ -16,6 +16,7 @@ import { registerStatusCommand } from "./commands/status.js";
 import { registerTaskCommands } from "./commands/task.js";
 import { DaemonHttpError, DaemonUnavailableError } from "./daemon-client.js";
 import { watchFeature } from "./live/watch.js";
+import { ProjectRefError } from "./project-ref.js";
 
 const program = new Command();
 program.name("apo").description("Orquestrador local de agentes de código").version("0.0.0");
@@ -43,7 +44,7 @@ registerControlCommands(program);
 registerProvidersCommand(program);
 
 program.parseAsync(process.argv).catch((error: unknown) => {
-  if (error instanceof DaemonUnavailableError) {
+  if (error instanceof DaemonUnavailableError || error instanceof ProjectRefError) {
     console.error(error.message);
   } else if (error instanceof DaemonHttpError) {
     // O daemon já devolve uma mensagem legível; o stack trace só atrapalha.

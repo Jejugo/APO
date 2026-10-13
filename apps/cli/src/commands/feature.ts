@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { daemonRequest } from "../daemon-client.js";
 import { watchFeature } from "../live/watch.js";
+import { resolveProjectRef } from "../project-ref.js";
 
 interface FeatureRow {
   id: string;
@@ -32,10 +33,10 @@ export function registerFeatureCommands(program: Command): void {
   feature
     .command("list")
     .description("Lista Features de um Project")
-    .requiredOption("--project <id>", "id do Project")
+    .requiredOption("--project <id|nome>", "id ou nome do Project (veja 'apo project list')")
     .action(async (options: { project: string }) => {
       const rows = await daemonRequest<FeatureRow[]>(
-        `/features?projectId=${encodeURIComponent(options.project)}`,
+        `/features?projectId=${encodeURIComponent(await resolveProjectRef(options.project))}`,
       );
       if (rows.length === 0) {
         console.log("Nenhuma feature encontrada.");

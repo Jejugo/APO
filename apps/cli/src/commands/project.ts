@@ -20,7 +20,11 @@ export function registerProjectCommands(program: Command): void {
       "Registra um repositório git como Project (com APO_URL, o caminho é o da máquina do daemon)",
     )
     .option("--branch <branch>", "branch base dos PRs (padrão: a do origin/HEAD do repo)")
-    .action(async (pathArg: string, options: { branch?: string }) => {
+    .option(
+      "--name <nome>",
+      "nome do Project, usado em --project <nome> (padrão: o nome da pasta do repositório; precisa ser único)",
+    )
+    .action(async (pathArg: string, options: { branch?: string; name?: string }) => {
       // Daemon remoto: o caminho é da VM e só o daemon consegue validá-lo.
       const repoPath = process.env.APO_URL ? pathArg : resolve(pathArg);
       if (!process.env.APO_URL && !existsSync(`${repoPath}/.git`)) {
@@ -30,11 +34,18 @@ export function registerProjectCommands(program: Command): void {
       }
       const created = await daemonRequest<ProjectRow & { existing?: boolean }>("/projects", {
         method: "POST",
-        body: { repoPath, ...(options.branch ? { defaultBranch: options.branch } : {}) },
+        body: {
+          repoPath,
+          ...(options.branch ? { defaultBranch: options.branch } : {}),
+          ...(options.name ? { name: options.name } : {}),
+        },
       });
       console.log(
         `${created.existing ? "Project já registrado" : "Project criado"}: ${created.id} (${created.name}, base ${created.defaultBranch})`,
       );
+      if (created.existing && options.name && options.name !== created.name) {
+        console.log(`O nome continua "${created.name}": um Project já registrado não é renomeado.`);
+      }
     });
 
   project
