@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { loadRoleRegistry } from "@apo/config";
 import type { ExecutionPreference } from "@apo/domain";
 import { renderMemories } from "@apo/memory";
@@ -9,10 +10,14 @@ import {
   type FeaturePlan,
   FeaturePlanSchema,
   appendTasks,
+  branchWebUrl,
   candidatesOf,
   checkFeatureOverlap,
   findTarget,
+  integrationBranchName,
+  integrationWorktreePath,
   planFeature,
+  pushBranch,
   runnerFor,
   syncBaseBranch,
   triageIntent,
@@ -498,6 +503,47 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
       }
     }
     reply.raw.end();
+  });
+
+  // `apo push`: publica a branch de integração no GitHub SEM abrir PR e sem mudar
+  // o status (fase de teste). Só com a Feature parada: no meio do trabalho a
+  // branch ainda recebe merges.
+  const PUSHABLE = new Set(["awaiting_approval", "needs_human", "failed"]);
+  app.post("/features/:id/push", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const feature = await deps.features.getById(id);
+    if (!feature) {
+      reply.code(404);
+      return { error: "feature não encontrada" };
+    }
+    if (!PUSHABLE.has(feature.status)) {
+      reply.code(409);
+      return {
+        error: `a Feature está ${feature.status}; só dá para publicar a branch quando ela está parada (${[...PUSHABLE].join(", ")})`,
+      };
+    }
+    const path = integrationWorktreePath(deps.worktreesRoot, id);
+    if (!existsSync(path)) {
+      reply.code(409);
+      return { error: "a worktree de integração não existe (mais): não há branch para publicar" };
+    }
+    const branch = integrationBranchName(id);
+    try {
+      const { commit } = await pushBranch(path, branch);
+      const url = await branchWebUrl(path, branch);
+      await emitEvent(deps.events, deps.logger, {
+        type: "feature.branch_pushed",
+        projectId: feature.projectId,
+        featureId: id,
+        payload: { branch, commit, ...(url ? { url } : {}) },
+      });
+      return { featureId: id, branch, commit, ...(url ? { url } : {}) };
+    } catch (error) {
+      reply.code(502);
+      return {
+        error: `falha no git push: ${(error instanceof Error ? error.message : String(error)).slice(0, 500)}`,
+      };
+    }
   });
 
   // M4.8 — `apo approve` / `apo reject --reason`: respondem ao interrupt.

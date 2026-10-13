@@ -97,12 +97,37 @@ export interface PullRequestCreator {
   create(input: PullRequestInput): Promise<{ url: string }>;
 }
 
+/**
+ * `git push` da branch de integração, sem abrir PR (fase de teste: o usuário
+ * quer ver a branch no GitHub antes de aprovar). Idempotente: repetir só envia
+ * o que mudou. Devolve o commit publicado.
+ */
+export async function pushBranch(
+  integrationPath: string,
+  branch: string,
+): Promise<{ commit: string }> {
+  await execa("git", ["push", "--set-upstream", "origin", branch], { cwd: integrationPath });
+  const head = await execa("git", ["rev-parse", "HEAD"], { cwd: integrationPath });
+  return { commit: head.stdout.trim() };
+}
+
+/** `https://github.com/<dono>/<repo>/tree/<branch>` a partir do remoto `origin` (sem credenciais). */
+export async function branchWebUrl(
+  integrationPath: string,
+  branch: string,
+): Promise<string | undefined> {
+  const remote = await execa("git", ["remote", "get-url", "origin"], {
+    cwd: integrationPath,
+    reject: false,
+  });
+  const match = /github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(remote.stdout.trim());
+  return match ? `https://github.com/${match[1]}/${match[2]}/tree/${branch}` : undefined;
+}
+
 /** `git push` da branch de integração + `gh pr create`. Nunca faz merge. */
 export class GhPullRequestCreator implements PullRequestCreator {
   async create(input: PullRequestInput): Promise<{ url: string }> {
-    await execa("git", ["push", "--set-upstream", "origin", input.branch], {
-      cwd: input.integrationPath,
-    });
+    await pushBranch(input.integrationPath, input.branch);
     const existing = await execa(
       "gh",
       [

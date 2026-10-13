@@ -57,6 +57,26 @@ export function registerControlCommands(program: Command): void {
     });
 
   program
+    .command("push <featureId>")
+    .description(
+      "Publica a branch da Feature no GitHub sem abrir PR (para testar); a Feature continua esperando aprovação",
+    )
+    .action(async (featureId: string) => {
+      const result = await daemonRequest<{
+        branch: string;
+        commit: string;
+        url?: string;
+      }>(`/features/${featureId}/push`, { method: "POST" });
+      console.log(`Branch publicada: ${result.branch} (${result.commit.slice(0, 8)})`);
+      if (result.url) console.log(`No GitHub: ${result.url}`);
+      console.log("Para testar no seu Mac:");
+      console.log(`  git fetch origin ${result.branch} && git switch ${result.branch}`);
+      console.log(
+        `A Feature segue esperando: apo approve ${featureId} (abre o PR)  |  apo reject ${featureId} --reason "…"`,
+      );
+    });
+
+  program
     .command("reject <featureId>")
     .description("Rejeita a Feature pronta; o motivo vira uma Task de ajuste")
     .requiredOption("--reason <texto>", "o que precisa mudar")

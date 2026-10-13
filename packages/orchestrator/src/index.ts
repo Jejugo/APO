@@ -86,7 +86,12 @@ export type {
 export { QUALITY_GATES, runQualityGates } from "./quality.js";
 export type { GateResult, QualityGate } from "./quality.js";
 
-export { GhPullRequestCreator, buildDeliverySummary } from "./delivery.js";
+export {
+  GhPullRequestCreator,
+  branchWebUrl,
+  buildDeliverySummary,
+  pushBranch,
+} from "./delivery.js";
 export type { PullRequestCreator, PullRequestInput } from "./delivery.js";
 
 export { PLAN_CHANGE_REQUEST } from "./plan-changes.js";
