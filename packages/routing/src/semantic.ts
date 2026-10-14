@@ -104,6 +104,19 @@ export function applyCapacityPolicy(input: PolicyInput): PolicyResult {
   if (pick.candidate.targetId !== suggested) {
     reasons.push(`sugestão ${suggested} indisponível ou excluída`);
   }
+  // Degradado (limite de uso recente) é último recurso: se há qualquer alternativa
+  // utilizável, ela vence — mesmo com probabilidade bem menor do Jev. Antes, só
+  // trocava quando as probabilidades estavam dentro da margem de equivalência, e a
+  // Task pausava por capacidade com um provider livre ao lado.
+  if (pick.snapshot.availability === "degraded") {
+    const healthy = viable.find((entry) => entry.snapshot.availability !== "degraded");
+    if (healthy) {
+      reasons.push(
+        `${pick.candidate.targetId} degradado; ${healthy.candidate.targetId} disponível`,
+      );
+      pick = healthy;
+    }
+  }
 
   if (policy.capacityAware) {
     const usage = (entry: (typeof viable)[number]) => entry.snapshot.usagePercent;

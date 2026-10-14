@@ -205,6 +205,22 @@ describe("capacity policy sobre o Jev (Phase 6)", () => {
     expect(result).toMatchObject({ target: B, overriddenByPolicy: true });
   });
 
+  it("provider degradado (limite recente) perde para um saudável mesmo com probabilidade muito menor", () => {
+    const result = applyCapacityPolicy({
+      decision: decision({ alpha: 0.72, beta: 0.28 }, { complexity: "high" }),
+      candidates,
+      capacity: capacityOf({ anthropic: { availability: "degraded" } }),
+    });
+    expect(result).toMatchObject({ target: A, overriddenByPolicy: false });
+    const degraded = applyCapacityPolicy({
+      decision: decision({ alpha: 0.72, beta: 0.28 }, { complexity: "high" }),
+      candidates,
+      capacity: capacityOf({ openai: { availability: "degraded" } }),
+    });
+    expect(degraded).toMatchObject({ target: B, overriddenByPolicy: true });
+    expect(degraded.reason).toContain("degradado");
+  });
+
   it("provider unknown: é elegível (sem dado ≠ indisponível)", () => {
     const result = applyCapacityPolicy({
       decision: decision({ alpha: 0.7, beta: 0.3 }),

@@ -308,6 +308,7 @@ export async function runTask(
   let pendingHandoverId: string | undefined = previousHandovers.at(-1)?.id;
   let exclude: string[] = [];
   let lastFailureWasCapacity = false;
+  let capacityFailuresInRun = 0;
 
   // M5: o Jev classifica a Task uma vez por execução; a capacity policy
   // reaplica a capacidade atual a cada attempt (resolveExecutionTarget).
@@ -793,9 +794,22 @@ export async function runTask(
     }
 
     deps.capacity.recordFailure(entry.harness.provider, failure);
-    const isCapacity = CAPACITY_FAILURES.has(failure.kind);
 
-    if (!RETRYABLE_FAILURES.has(failure.kind) || attemptsInRun + 1 >= deps.maxAttemptsPerTask) {
+    // Limite de uso não é falha da Task: não consome o orçamento de tentativas.
+    // Teto próprio (um por target) impede laço se todos os providers acusarem limite.
+    const isCapacity = CAPACITY_FAILURES.has(failure.kind);
+    if (isCapacity) capacityFailuresInRun += 1;
+    if (isCapacity && capacityFailuresInRun > deps.targets.length) {
+      await deps.tasks.updateStatus(taskId, "retrying");
+      return {
+        status: "paused_capacity",
+        reason: "todos os providers acusaram limite de uso nesta execução",
+      };
+    }
+    if (
+      !RETRYABLE_FAILURES.has(failure.kind) ||
+      (!isCapacity && attemptsInRun + 1 >= deps.maxAttemptsPerTask)
+    ) {
       await deps.tasks.updateStatus(taskId, "failed");
       return { status: "failed", reason: failure.message };
     }
@@ -816,5 +830,7 @@ export async function runTask(
     });
     exclude = isCapacity ? exclude : [...exclude, entry.candidate.targetId];
     lastFailureWasCapacity = isCapacity;
+    // O `for` soma 1 a cada passo; falha de capacidade não gasta tentativa.
+    if (isCapacity) attemptsInRun -= 1;
   }
 }

@@ -646,6 +646,30 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     expect(await repos.routingDecisions.listByTask(tasks[0]?.id ?? "")).toHaveLength(2);
   });
 
+  it("limite de uso não gasta o orçamento de tentativas: sem providers livres, pausa em vez de falhar", async () => {
+    // Orçamento de 3 tentativas: duas falhas de capacidade + uma falha comum já
+    // bateriam no limite, e antes a última falha de limite virava `failed`.
+    const { feature, deps, input } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", [
+          { fail: { kind: "rate_limited", resetInMs: 3_600_000 } },
+        ]),
+        fakeTarget("fake-b", "openai", [{ fail: { kind: "crash" } }]),
+        fakeTarget("fake-c", "google", [{ fail: { kind: "rate_limited", resetInMs: 3_600_000 } }]),
+      ],
+    });
+    await run(deps, input);
+
+    const { feature: done, tasks, attempts } = await finalState(feature.id);
+    expect(done?.status).toBe("paused_capacity");
+    expect(tasks[0]?.status).toBe("retrying");
+    expect(attempts.map((attempt) => attempt.status)).toEqual([
+      "rate_limited",
+      "failed",
+      "rate_limited",
+    ]);
+  });
+
   it("todos os providers esgotados → paused_capacity, sem rodar nenhum worker", async () => {
     const capacity = new CapacityMonitor();
     capacity.recordFailure("anthropic", { kind: "quota_exhausted", message: "limite" });
