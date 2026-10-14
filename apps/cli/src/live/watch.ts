@@ -6,7 +6,7 @@ import { daemonRequest } from "../daemon-client.js";
 import { formatDuration } from "./duration.js";
 import { c, formatAgentLine, stripAnsi } from "./format.js";
 import { ENTER_SCREEN, LEAVE_SCREEN, ScreenPainter } from "./screen.js";
-import { followGates, followTask } from "./tail.js";
+import { followPhase, followTask } from "./tail.js";
 
 interface Board {
   feature: {
@@ -24,6 +24,14 @@ interface Board {
     status: "running" | "passed" | "failed";
     startedAt: string;
     durationMs?: number;
+  }>;
+  review?: Array<{
+    step: string;
+    target: string;
+    status: "running" | "done" | "failed";
+    startedAt: string;
+    durationMs?: number;
+    items?: number;
   }>;
   tasks: Array<{
     id: string;
@@ -134,6 +142,33 @@ function render(board: Board, input: string): string[] {
       lines.push(` ${icon} ${fit(gate.gate, 10)} ${fit(time, 8)} ${c.dim(gate.command ?? "")}`);
     }
   }
+  if (f.status === "reviewing" && (board.review?.length ?? 0) > 0) {
+    lines.push(c.dim("─".repeat(width)), c.dim("review:"));
+    for (const step of board.review ?? []) {
+      const icon =
+        step.status === "running"
+          ? c.yellow("●")
+          : step.status === "done"
+            ? c.green("✓")
+            : c.red("✗");
+      const time =
+        step.durationMs !== undefined
+          ? formatDuration(step.durationMs / 1000)
+          : elapsed(step.startedAt);
+      const label = step.step === "requirements" ? "requisitos" : "review";
+      const result =
+        step.status === "done" && step.items !== undefined
+          ? step.step === "requirements"
+            ? step.items === 0
+              ? "todos atendidos"
+              : `${step.items} não atendido(s)`
+            : `${step.items} achado(s)`
+          : "";
+      lines.push(
+        ` ${icon} ${fit(label, 10)} ${fit(time, 8)} ${fit(step.target, 14)} ${c.dim(result)}`,
+      );
+    }
+  }
   lines.push(c.dim("─".repeat(width)), c.dim("últimos eventos:"));
   // Evento longo (ex.: motivo de um plan_change) não pode quebrar o painel.
   // O corte considera os códigos de cor, que não ocupam coluna.
@@ -163,7 +198,7 @@ function render(board: Board, input: string): string[] {
   lines.push(
     "",
     c.dim(
-      `[número + Enter] ver o agente ao vivo   ${(board.gates?.length ?? 0) > 0 ? "[g] gates   " : ""}[q] sair   ${input ? `› ${input}` : ""}`,
+      `[número + Enter] ver o agente ao vivo   ${(board.gates?.length ?? 0) > 0 ? "[g] gates   " : ""}${(board.review?.length ?? 0) > 0 ? "[r] review   " : ""}[q] sair   ${input ? `› ${input}` : ""}`,
     ),
   );
   return lines;
@@ -242,16 +277,24 @@ export async function watchFeature(featureId: string): Promise<void> {
     stopTail = follow.stop;
   };
 
-  const openGates = async () => {
+  const openPhase = async (phase: "gates" | "review") => {
     mode = "tail";
     leaveScreen();
-    process.stdout.write(`${c.bold("Quality gates")}  ${c.dim("[q] voltar ao painel")}\n\n`);
-    const follow = await followGates(featureId, {
+    process.stdout.write(
+      `${c.bold(phase === "gates" ? "Quality gates" : "Review")}  ${c.dim("[q] voltar ao painel")}\n\n`,
+    );
+    const follow = await followPhase(featureId, phase, {
       onAttempt: (attempt) => console.log(c.bold(`── rodada ${attempt.n} ──`)),
-      // Barras de progresso reescrevem a linha com \r: fica só o último estado.
-      onLine: (line) => console.log(stripAnsi(line.split("\r").at(-1) ?? "")),
-      onDone: (status) =>
-        console.log(c.bold(`\n── fim dos gates (Feature ${status}). [q] voltar ──`)),
+      onLine: (line) => {
+        if (phase === "review") {
+          // Mesmo formato do log de um agente (stream-json do CLI).
+          for (const out of formatAgentLine(line)) console.log(out);
+        } else {
+          // Barras de progresso reescrevem a linha com \r: fica só o último estado.
+          console.log(stripAnsi(line.split("\r").at(-1) ?? ""));
+        }
+      },
+      onDone: (status) => console.log(c.bold(`\n── fim (Feature ${status}). [q] voltar ──`)),
     });
     stopTail = follow.stop;
   };
@@ -275,7 +318,11 @@ export async function watchFeature(featureId: string): Promise<void> {
     }
     if (key === "q") return quit();
     if (key === "g" && (board?.gates?.length ?? 0) > 0) {
-      void openGates();
+      void openPhase("gates");
+      return;
+    }
+    if (key === "r" && (board?.review?.length ?? 0) > 0) {
+      void openPhase("review");
       return;
     }
     if (/^\d$/.test(key)) input += key;

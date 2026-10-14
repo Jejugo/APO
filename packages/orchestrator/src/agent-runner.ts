@@ -42,6 +42,8 @@ export interface AgentRunInput<T> {
   timeoutMs: number;
   model?: string;
   maxRetries?: number;
+  /** Log do processo (acompanhamento ao vivo); sem isto, um arquivo solto por chamada. */
+  logPath?: string;
 }
 
 export interface AgentRunResult<T> {
@@ -91,7 +93,7 @@ export class AgentRunnerImpl implements AgentRunner {
           networkAccess: false,
           outputSchema: jsonSchema,
           timeoutMs: input.timeoutMs,
-          logPath: await agentRunnerLogPath(),
+          logPath: input.logPath ?? (await agentRunnerLogPath()),
           ...(input.model !== undefined || this.defaults.model !== undefined
             ? { model: (input.model ?? this.defaults.model) as string }
             : {}),

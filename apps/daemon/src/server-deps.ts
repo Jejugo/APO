@@ -47,6 +47,8 @@ export interface ServerDeps {
   attemptLogPath?: (attemptId: string) => string;
   /** Log dos quality gates de uma iteração da Feature — `apo watch` (tecla `g`). */
   gateLogPath?: (featureId: string, iteration: number) => string;
+  /** Log do review (requisitos + Reviewer) de uma iteração — `apo watch` (tecla `r`). */
+  reviewLogPath?: (featureId: string, iteration: number) => string;
   /** M6.9: detalhes do `/health` (Postgres, providers, Jev, memória). */
   health?: () => Promise<Record<string, unknown>>;
 }

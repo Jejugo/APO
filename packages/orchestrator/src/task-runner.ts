@@ -102,6 +102,8 @@ export interface EngineDeps {
   attemptLogPath?: (attemptId: string) => string;
   /** Log dos quality gates de uma iteração da Feature (`apo watch`, tecla `g`). */
   gateLogPath?: (featureId: string, iteration: number) => string;
+  /** Log das chamadas do review (requisitos e Reviewer) de uma iteração (`apo watch`, tecla `r`). */
+  reviewLogPath?: (featureId: string, iteration: number) => string;
   /** Onde ficam os `result.json` (fora do repo, seção 6.3). */
   runsRoot?: string;
   loadRoles?: (repoPath: string) => Map<string, RoleDefinition>;

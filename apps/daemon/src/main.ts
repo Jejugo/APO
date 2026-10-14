@@ -167,6 +167,9 @@ async function main(): Promise<void> {
   const gateLogPath = (featureId: string, iteration: number) =>
     join(apoHome(), "logs", "gates", `${featureId}-${iteration}.log`);
 
+  const reviewLogPath = (featureId: string, iteration: number) =>
+    join(apoHome(), "logs", "review", `${featureId}-${iteration}.log`);
+
   const featureRunner = new FeatureRunner(
     {
       logger,
@@ -195,6 +198,7 @@ async function main(): Promise<void> {
       },
       attemptLogPath,
       gateLogPath,
+      reviewLogPath,
       runsRoot: join(apoHome(), "runs"),
       stallTimeoutMs: (limits?.stallTimeoutMinutes ?? 10) * 60_000,
       // M2.4: compartilhado entre todas as Features do daemon.
@@ -239,6 +243,7 @@ async function main(): Promise<void> {
   const serverDeps: ServerDeps = {
     attemptLogPath,
     gateLogPath,
+    reviewLogPath,
     logger,
     projects,
     projectAgents,

@@ -257,6 +257,8 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
       judgeTimeoutMs: 10_000,
       attemptLogPath: (attemptId) => join(worktreesRoot, "logs", `${attemptId}.log`),
       runsRoot: join(worktreesRoot, "runs"),
+      reviewLogPath: (id, iteration) =>
+        join(worktreesRoot, "logs", `${id}-${iteration}.review.log`),
       ...(options.slots ? { slots: options.slots } : {}),
     };
     const input = {
@@ -821,6 +823,26 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     expect(waiting?.deliverySummary).toContain("falta a seção 5");
     const events = (await repos.events.listByFeature(feature.id)).map((event) => event.type);
     expect(events).toContain("quality.skipped");
+    // Passos do review visíveis: início e fim de cada chamada, com o resultado.
+    const stepEvents = (await repos.events.listByFeature(feature.id)).filter((event) =>
+      event.type.startsWith("review.step_"),
+    );
+    expect(
+      stepEvents.map((event) => `${event.type}:${(event.payload as { step: string }).step}`),
+    ).toEqual([
+      "review.step_started:requirements",
+      "review.step_finished:requirements",
+      "review.step_started:review",
+      "review.step_finished:review",
+    ]);
+    expect(stepEvents.at(-1)?.payload).toMatchObject({ ok: true, items: 1 });
+    // O log da iteração ganha um marcador por passo, antes da saída do agente.
+    const reviewLog = readFileSync(
+      join(worktreesRoot, "logs", `${feature.id}-0.review.log`),
+      "utf8",
+    );
+    expect(reviewLog).toContain("── requisitos · fake-a ──");
+    expect(reviewLog).toContain("── review · fake-a ──");
   });
 
   it("M4.1/M4.5: gate falhando vira Task corretiva com a saída do comando", async () => {

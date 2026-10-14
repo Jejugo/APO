@@ -50,6 +50,8 @@ export interface ReviewContext {
   timeoutMs: number;
   /** Feature de documento: avalia o texto; os achados vão para o humano, não viram Tasks. */
   document?: boolean;
+  /** Onde gravar o log desta chamada (`apo watch`, tecla `r`). */
+  logPath?: string;
 }
 
 export async function verifyRequirements(
@@ -73,6 +75,7 @@ export async function verifyRequirements(
       cwd: context.cwd,
       schema: RequirementsSchema,
       timeoutMs: context.timeoutMs,
+      ...(context.logPath ? { logPath: context.logPath } : {}),
     },
     signal,
   );
@@ -118,6 +121,7 @@ export async function reviewIntegration(
       cwd: context.cwd,
       schema: ReviewSchema,
       timeoutMs: context.timeoutMs,
+      ...(context.logPath ? { logPath: context.logPath } : {}),
     },
     signal,
   );

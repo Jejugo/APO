@@ -18,12 +18,13 @@ export function followTask(
   return followStream(`/tasks/${taskId}/live?follow=true`, handlers);
 }
 
-/** Saída ao vivo dos quality gates da Feature (fase `validating`). */
-export function followGates(
+/** Saída ao vivo de uma fase da Feature que não é Task: gates (`validating`) ou review (`reviewing`). */
+export function followPhase(
   featureId: string,
+  phase: "gates" | "review",
   handlers: TailHandlers,
 ): Promise<{ stop(): void; finished: Promise<void> }> {
-  return followStream(`/features/${featureId}/gates/live?follow=true`, handlers);
+  return followStream(`/features/${featureId}/${phase}/live?follow=true`, handlers);
 }
 
 async function followStream(

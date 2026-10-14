@@ -762,18 +762,89 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
         timeoutMs: judgeTimeout,
         ...((await isDocument(state.featureId)) ? { document: true } : {}),
       };
+      const reviewLog = deps.reviewLogPath?.(state.featureId, iteration);
+      if (reviewLog) {
+        try {
+          mkdirSync(dirname(reviewLog), { recursive: true });
+          writeFileSync(reviewLog, "");
+        } catch {
+          // log é só para acompanhamento
+        }
+      }
+      // Cada chamada do review é um "passo" visível no painel: início/fim em
+      // eventos e a saída no log da iteração.
+      const reviewStep = async <R extends { error?: string; failure?: object }>(
+        step: "requirements" | "review",
+        judge: { entry: { candidate: { targetId: string } } },
+        call: (logPath: string | undefined) => Promise<R>,
+        count: (result: R) => number | undefined,
+      ): Promise<R> => {
+        const target = judge.entry.candidate.targetId;
+        const started = Date.now();
+        if (reviewLog) {
+          try {
+            appendFileSync(
+              reviewLog,
+              `── ${step === "requirements" ? "requisitos" : "review"} · ${target} ──\n`,
+            );
+          } catch {
+            // idem
+          }
+        }
+        await emitEvent(deps.events, deps.logger, {
+          type: "review.step_started",
+          projectId: state.projectId,
+          featureId: state.featureId,
+          payload: { iteration, step, target },
+        });
+        const result = await call(reviewLog);
+        await emitEvent(deps.events, deps.logger, {
+          type: "review.step_finished",
+          projectId: state.projectId,
+          featureId: state.featureId,
+          payload: {
+            iteration,
+            step,
+            target,
+            ok: !result.error && !result.failure,
+            durationMs: Date.now() - started,
+            ...(count(result) !== undefined ? { items: count(result) } : {}),
+          },
+        });
+        return result;
+      };
 
       // Limite de capacidade no meio do julgamento → outro provider; sem
       // nenhum, pausa por capacidade (retoma sozinha no reset).
       const requirementsRun = await withJudge(deps, undefined, async (judge) => {
-        const result = await verifyRequirements(judge.runner, context, signal);
+        const result = await reviewStep(
+          "requirements",
+          judge,
+          (logPath) =>
+            verifyRequirements(
+              judge.runner,
+              { ...context, ...(logPath ? { logPath } : {}) },
+              signal,
+            ),
+          (run) => run.checks?.filter((check) => !check.satisfied).length,
+        );
         return { ...(result.checks ? { value: result.checks } : {}), ...result };
       });
       const reviewRun = await withJudge(
         deps,
         await mostUsedProvider(state.featureId),
         async (judge) => {
-          const result = await reviewIntegration(judge.runner, context, signal);
+          const result = await reviewStep(
+            "review",
+            judge,
+            (logPath) =>
+              reviewIntegration(
+                judge.runner,
+                { ...context, ...(logPath ? { logPath } : {}) },
+                signal,
+              ),
+            (run) => run.findings?.length,
+          );
           return { ...(result.findings ? { value: result.findings } : {}), ...result };
         },
       );
