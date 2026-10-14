@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { daemonRequest } from "../daemon-client.js";
 import { watchFeature } from "../live/watch.js";
+import { summarizeObjective } from "../objective-summary.js";
 import { resolveProjectRef } from "../project-ref.js";
 
 interface FeatureRow {
@@ -32,9 +33,10 @@ export function registerFeatureCommands(program: Command): void {
 
   feature
     .command("list")
-    .description("Lista Features de um Project")
+    .description("Lista Features de um Project (uma linha cada: id, status e resumo do objetivo)")
     .requiredOption("--project <id|nome>", "id ou nome do Project (veja 'apo project list')")
-    .action(async (options: { project: string }) => {
+    .option("--full", "mostra o objetivo inteiro, em vez do resumo de uma linha")
+    .action(async (options: { project: string; full?: boolean }) => {
       const rows = await daemonRequest<FeatureRow[]>(
         `/features?projectId=${encodeURIComponent(await resolveProjectRef(options.project))}`,
       );
@@ -43,7 +45,9 @@ export function registerFeatureCommands(program: Command): void {
         return;
       }
       for (const row of rows) {
-        console.log(`${row.id}  [${row.status}]  ${row.objective}`);
+        console.log(
+          `${row.id}  [${row.status}]  ${options.full ? row.objective : summarizeObjective(row.objective)}`,
+        );
       }
     });
 
