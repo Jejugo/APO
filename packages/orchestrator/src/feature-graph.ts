@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 // ApoNativeEngine (ADR 0003): o graph de uma Feature.
 //
 //   triage → plan → execute_wave → handle_plan_changes ⇄ (próxima onda)
@@ -45,6 +46,7 @@ import {
   evaluateCompletion,
   isBlocking,
 } from "./completion.js";
+import { correctivesFromFindings } from "./corrective.js";
 import { GhPullRequestCreator, buildDeliverySummary } from "./delivery.js";
 import { candidatesOf, findTarget } from "./harness-registry.js";
 import { pickJudge, withJudge } from "./judge.js";
@@ -317,7 +319,19 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
     }
   }
 
+  /** Feature de documento (`intent: document`): sem gates, sem correção automática. */
+  async function isDocument(featureId: string): Promise<boolean> {
+    return (await deps.features.getById(featureId))?.intent === "document";
+  }
+
   async function latestGates(featureId: string, iteration: number) {
+    if (await isDocument(featureId)) {
+      // Não há código a validar: os gates contam como skipped (não bloqueiam).
+      return Object.fromEntries(QUALITY_GATES.map((gate) => [gate, "skipped" as const])) as Record<
+        QualityGate,
+        "skipped"
+      >;
+    }
     const rows = await deps.qualityResults.listByFeature(featureId);
     const gates: Partial<Record<QualityGate, "passed" | "failed" | "skipped">> = {};
     for (const row of rows) {
@@ -625,12 +639,67 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
         };
       }
 
+      if (await isDocument(state.featureId)) {
+        await emitEvent(deps.events, deps.logger, {
+          type: "quality.skipped",
+          projectId: state.projectId,
+          featureId: state.featureId,
+          payload: { reason: "Feature de documento: sem quality gates" },
+        });
+        return { outcome: "gates_passed" as const };
+      }
+
       await deps.features.updateStatus(state.featureId, "validating");
       const iteration = (await deps.features.getById(state.featureId))?.fixIteration ?? 0;
+      const gateLog = deps.gateLogPath?.(state.featureId, iteration);
+      const writeGateLog = (text: string) => {
+        if (!gateLog) return;
+        try {
+          appendFileSync(gateLog, text);
+        } catch {
+          // log é só para acompanhamento: nunca derruba os gates
+        }
+      };
+      if (gateLog) {
+        try {
+          mkdirSync(dirname(gateLog), { recursive: true });
+          writeFileSync(gateLog, "");
+        } catch {
+          // idem
+        }
+      }
       const results = await runQualityGates(
         state.repoPath,
         integrationPath,
         deps.workerEnv?.(state.repoPath),
+        {
+          onStart: (gate, command) => {
+            writeGateLog(`── ${gate}${command ? ` · ${command}` : ""} ──\n`);
+            void emitEvent(deps.events, deps.logger, {
+              type: "quality.gate_started",
+              projectId: state.projectId,
+              featureId: state.featureId,
+              payload: { iteration, gate, ...(command ? { command } : {}) },
+            });
+          },
+          onOutput: (_gate, chunk) => writeGateLog(chunk),
+          onFinish: (result) => {
+            writeGateLog(
+              `\n── ${result.gate} ${result.status === "passed" ? "passou" : "falhou"} em ${Math.round(result.durationMs / 1000)}s ──\n`,
+            );
+            void emitEvent(deps.events, deps.logger, {
+              type: "quality.gate_finished",
+              projectId: state.projectId,
+              featureId: state.featureId,
+              payload: {
+                iteration,
+                gate: result.gate,
+                status: result.status,
+                durationMs: result.durationMs,
+              },
+            });
+          },
+        },
       );
       for (const result of results) {
         await deps.qualityResults.create({
@@ -691,6 +760,7 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
         ),
         cwd: integrationPath,
         timeoutMs: judgeTimeout,
+        ...((await isDocument(state.featureId)) ? { document: true } : {}),
       };
 
       // Limite de capacidade no meio do julgamento → outro provider; sem
@@ -770,7 +840,8 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
           missingRequirements: verdict.missingRequirements.length,
         },
       });
-      if (verdict.ready) return { outcome: "ready" as const };
+      // Documento: o review informa, o humano decide — sem Tasks corretivas.
+      if (verdict.ready || context.document) return { outcome: "ready" as const };
 
       const corrective: Corrective[] = [
         ...verdict.missingRequirements.map((check) => ({
@@ -778,16 +849,7 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
           description: `A verificação de requisitos concluiu que este requisito do objetivo não está atendido: ${check.requirement}${check.evidence ? `\n\nEvidência: ${check.evidence}` : ""}`,
           expectedPaths: [],
         })),
-        ...verdict.blockingFindings.map((finding) => ({
-          title: `Review (${finding.severity}): ${finding.description}`.slice(0, 120),
-          description: [
-            `Finding do review (${finding.severity})${finding.file ? ` em ${finding.file}` : ""}: ${finding.description}`,
-            finding.suggestedFix ? `Correção sugerida: ${finding.suggestedFix}` : "",
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
-          expectedPaths: finding.file ? [finding.file] : [],
-        })),
+        ...correctivesFromFindings(verdict.blockingFindings),
       ];
       return startFixRound(state, corrective, "review_fix", verdict.reasons.join("; "));
     })
@@ -809,10 +871,13 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
         blockingSeverity: reviewConfig(state.repoPath).blockingSeverity,
       });
       if (!verdict.ready) {
-        return {
-          outcome: "failure" as const,
-          failureReason: `completion contract não satisfeito: ${verdict.reasons.join("; ")}`,
-        };
+        // Documento: o que o contrato apontaria vai no resumo para o humano decidir.
+        if (!(await isDocument(state.featureId))) {
+          return {
+            outcome: "failure" as const,
+            failureReason: `completion contract não satisfeito: ${verdict.reasons.join("; ")}`,
+          };
+        }
       }
 
       const tasks = (await deps.tasks.listByFeature(state.featureId)).sort((a, b) => a.seq - b.seq);

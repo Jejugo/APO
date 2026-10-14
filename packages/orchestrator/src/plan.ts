@@ -93,6 +93,10 @@ export const WORKFLOW_TEMPLATES = {
   bugfix:
     "Bugfix: normalmente UMA Task que reproduz o bug com um teste e corrige. Só divida se a correção " +
     "tocar áreas realmente independentes.",
+  document:
+    "Documento: o produto é UM texto (plano, análise, relatório), não código. Planeje UMA Task " +
+    "(kind write) que escreve o arquivo pedido e não altera mais nada; só divida se o pedido listar " +
+    "documentos independentes. Não crie Tasks de código, de teste nem de revisão.",
 } as const;
 
 export interface PlanFeatureInput {

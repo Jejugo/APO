@@ -36,7 +36,7 @@ const providerSchema = z.enum(["anthropic", "openai", "google"]);
 const createFeatureSchema = z.object({
   projectId: z.string().min(1),
   objective: z.string().min(1),
-  as: z.enum(["question", "bugfix", "feature"]).optional(),
+  as: z.enum(["question", "document", "bugfix", "feature"]).optional(),
   harness: harnessSchema.optional(),
   prefer: harnessSchema.optional(),
   // M2.13: segunda chamada depois de um 409 `ask_user`. O cliente devolve o

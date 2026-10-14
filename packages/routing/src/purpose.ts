@@ -3,7 +3,13 @@
 // de complexidade para o Jev. Nada aqui é requisito: sem `bestFor` configurado,
 // o comportamento é o de antes.
 
-import { type ResolveInput, type ResolveResult, resolveExecutionTarget } from "./resolver.js";
+import type { ExecutionPreference } from "@apo/domain";
+import {
+  type ResolveInput,
+  type ResolveResult,
+  matchesPreference,
+  resolveExecutionTarget,
+} from "./resolver.js";
 import type { RoutingCandidate, TargetPurpose } from "./types.js";
 
 export function hasPurpose(candidate: RoutingCandidate, purpose: TargetPurpose): boolean {
@@ -45,9 +51,21 @@ export function resolveForPlanning(input: ResolveInput): ResolveResult {
 
 /**
  * Candidatos para executar Tasks: targets só de planejamento não pegam Tasks
- * comuns (custo), a menos que sejam tudo o que existe.
+ * comuns (custo), a menos que sejam tudo o que existe ou que uma preferência
+ * explícita (Task, Feature ou role) aponte para eles — o filtro vale só para a
+ * escolha automática.
  */
-export function executionCandidates<T extends RoutingCandidate>(candidates: T[]): T[] {
-  const rest = candidates.filter((candidate) => !isPlanningOnly(candidate));
+export function executionCandidates<T extends RoutingCandidate>(
+  candidates: T[],
+  preferences: Array<ExecutionPreference | null | undefined> = [],
+): T[] {
+  const explicit = preferences.filter(
+    (preference): preference is ExecutionPreference => !!preference && preference.mode !== "auto",
+  );
+  const rest = candidates.filter(
+    (candidate) =>
+      !isPlanningOnly(candidate) ||
+      explicit.some((preference) => matchesPreference(candidate, preference)),
+  );
   return rest.length > 0 ? rest : candidates;
 }

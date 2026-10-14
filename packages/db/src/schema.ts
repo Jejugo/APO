@@ -17,7 +17,7 @@ import {
 // handovers, etc.) chegam via migration nova quando a fase que as usa
 // começar, não antes (regra 3 do PLAN.md).
 
-export const featureIntentEnum = pgEnum("feature_intent", ["bugfix", "feature"]);
+export const featureIntentEnum = pgEnum("feature_intent", ["bugfix", "feature", "document"]);
 
 export const featureStatusEnum = pgEnum("feature_status", [
   "created",

@@ -2,18 +2,31 @@
 // qualquer Feature: "question" nunca cria Feature/Task, só gera o evento leve
 // `query.answered`; "bugfix"/"feature" entram no pipeline normal — a
 // diferença entre os dois é o template de workflow (M2.10), não a
-// arquitetura de execução.
+// arquitetura de execução. "document" (plano, análise, relatório) produz só um
+// documento: sem quality gates e sem rodadas automáticas de correção.
 
 import { z } from "zod";
 import type { AgentRunner } from "./agent-runner.js";
 
-export type Intent = "question" | "bugfix" | "feature";
+export type Intent = "question" | "document" | "bugfix" | "feature";
 
 const QUESTION_PATTERNS = [
   /^(o\s+que|por\s+que|porque|como|qual|quais|quando|onde|quem)\b/i,
   /^(what|why|how|when|where|who|which)\b/i,
   /\?\s*$/,
 ];
+
+// Pedido cujo produto é um texto, não código. Se o pedido também manda
+// implementar, é uma feature: a guarda abaixo evita tratar "escreva o plano e
+// implemente" como documento.
+const DOCUMENT_PATTERNS = [
+  /\b(escreva|redija|elabore|produza|gere|monte|fa[cç]a)\b[^.\n]{0,60}\b(plano|documento|relat[óo]rio|an[aá]lise|especifica[cç][aã]o|spec|adr|rfc|proposta|invent[aá]rio)\b/i,
+  /\b(write|draft|produce|prepare)\b[^.\n]{0,60}\b(plan|document|report|analysis|spec|adr|rfc|proposal)\b/i,
+  /\b(somente|apenas)\s+(um\s+)?(documento|plano|relat[óo]rio|an[aá]lise)\b/i,
+  /\bonly\s+(a\s+)?(document|plan|report|analysis)\b/i,
+  /\bplano\s+t[ée]cnico\b/i,
+];
+const IMPLEMENT_PATTERNS = [/\b(implemente|implementar|construa|construir|implement|build)\b/i];
 
 const BUGFIX_PATTERNS = [
   /\b(corrija|corrigir|conserte|consertar|arrume|arrumar|bug|erro|falha|quebrado|não\s+funciona)\b/i,
@@ -31,6 +44,12 @@ export function classifyDeterministic(input: string): Intent | undefined {
   if (QUESTION_PATTERNS.some((pattern) => pattern.test(text))) {
     return "question";
   }
+  if (
+    DOCUMENT_PATTERNS.some((pattern) => pattern.test(text)) &&
+    !IMPLEMENT_PATTERNS.some((pattern) => pattern.test(text))
+  ) {
+    return "document";
+  }
   if (BUGFIX_PATTERNS.some((pattern) => pattern.test(text))) {
     return "bugfix";
   }
@@ -41,7 +60,7 @@ export function classifyDeterministic(input: string): Intent | undefined {
 }
 
 const intentClassificationSchema = z.object({
-  intent: z.enum(["question", "bugfix", "feature"]),
+  intent: z.enum(["question", "document", "bugfix", "feature"]),
   reason: z.string(),
 });
 
@@ -53,7 +72,7 @@ export interface IntentTriageResult {
 }
 
 export interface IntentTriageOptions {
-  /** Flag `--as question|bugfix|feature` — vence qualquer classificação. */
+  /** Flag `--as question|document|bugfix|feature` — vence qualquer classificação. */
   override?: Intent;
   agentRunner: AgentRunner;
   cwd: string;
@@ -77,7 +96,7 @@ export async function triageIntent(
   const result = await options.agentRunner.run(
     "lead",
     {
-      prompt: `Classifique o pedido do usuário como "question" (pergunta ou leitura, não muda código), "bugfix" (corrige um comportamento quebrado) ou "feature" (funcionalidade nova). Pedido: "${input}"`,
+      prompt: `Classifique o pedido do usuário como "question" (pergunta ou leitura, não muda código), "document" (o produto é um texto: plano, análise, relatório, especificação; não muda código de produção), "bugfix" (corrige um comportamento quebrado) ou "feature" (funcionalidade nova). Na dúvida entre "document" e "feature", pergunte-se: o pedido manda mudar o comportamento do sistema? Se não, é "document". Pedido: "${input}"`,
       cwd: options.cwd,
       schema: intentClassificationSchema,
       timeoutMs: options.timeoutMs,
@@ -90,6 +109,6 @@ export async function triageIntent(
   }
 
   throw new Error(
-    `IntentTriage: não foi possível classificar o pedido automaticamente (${result.failure?.kind ?? "saída inválida"}). Use --as question|bugfix|feature para forçar.`,
+    `IntentTriage: não foi possível classificar o pedido automaticamente (${result.failure?.kind ?? "saída inválida"}). Use --as question|document|bugfix|feature para forçar.`,
   );
 }

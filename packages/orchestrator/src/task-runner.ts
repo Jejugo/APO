@@ -100,6 +100,8 @@ export interface EngineDeps {
   /** Environment do worker (allowlist + extras do Project). */
   workerEnv?: (repoPath: string) => Record<string, string>;
   attemptLogPath?: (attemptId: string) => string;
+  /** Log dos quality gates de uma iteração da Feature (`apo watch`, tecla `g`). */
+  gateLogPath?: (featureId: string, iteration: number) => string;
   /** Onde ficam os `result.json` (fora do repo, seção 6.3). */
   runsRoot?: string;
   loadRoles?: (repoPath: string) => Map<string, RoleDefinition>;
@@ -310,15 +312,18 @@ export async function runTask(
   let semantic: SemanticDecision | undefined;
   let semanticError: string | undefined;
   let semanticTried = false;
-  // Targets só de planejamento (ex.: Opus) não pegam Tasks comuns.
-  const executionIds = new Set(
-    executionCandidates(deps.targets.map((entry) => entry.candidate)).map(
-      (candidate) => candidate.targetId,
-    ),
-  );
-  const executionTargets = deps.targets.filter((entry) =>
-    executionIds.has(entry.candidate.targetId),
-  );
+  // Targets só de planejamento (ex.: Opus) não pegam Tasks comuns, salvo por
+  // preferência explícita (ex.: role `architect` fixado no Opus).
+  const executionTargetsFor = (taskPreference: ExecutionPreference | null) => {
+    const ids = new Set(
+      executionCandidates(
+        deps.targets.map((entry) => entry.candidate),
+        [taskPreference, featurePreference, rolePreference],
+      ).map((candidate) => candidate.targetId),
+    );
+    return deps.targets.filter((entry) => ids.has(entry.candidate.targetId));
+  };
+  const executionTargets = executionTargetsFor(null);
   const semanticFor = async (taskPreference: ExecutionPreference | null) => {
     const overridden = [taskPreference, featurePreference, rolePreference].some(
       (preference) => preference && preference.mode !== "auto",
@@ -398,7 +403,7 @@ export async function runTask(
     const semanticDecision = resumeEntry ? undefined : await semanticFor(taskPreference);
     const resolve = (excluded: string[]) =>
       resolveExecutionTarget({
-        candidates: candidatesOf(executionTargets),
+        candidates: candidatesOf(executionTargetsFor(taskPreference)),
         capacity: capacityOf,
         taskPreference,
         featurePreference,

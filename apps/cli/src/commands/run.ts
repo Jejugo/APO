@@ -12,7 +12,9 @@ interface RunOptions {
   project: string;
   harness?: string;
   prefer?: string;
-  as?: "question" | "bugfix" | "feature";
+  as?: "question" | "document" | "bugfix" | "feature";
+  ask?: boolean;
+  document?: boolean;
   onOverlap?: "isolate" | "absorb";
   autoResolve?: boolean;
 }
@@ -28,7 +30,7 @@ interface OverlapAsk {
   overlappingFeatureId: string;
   overlappingObjective: string;
   sharedPaths: string[];
-  intent: "bugfix" | "feature";
+  intent: "document" | "bugfix" | "feature";
   plan: unknown;
 }
 
@@ -69,7 +71,12 @@ export function registerRunCommand(program: Command): void {
     // no M1, sem fallback silencioso.
     .option("--harness <harness>", "força um harness (forced): claude-code | codex — sem failover")
     .option("--prefer <harness>", "prefere um harness (preferred), com failover se indisponível")
-    .option("--as <intent>", "força a classificação: question | bugfix | feature")
+    .option("--as <intent>", "força a classificação: question | document | bugfix | feature")
+    .option("--ask", "só responde (lê o repositório); nunca cria Feature — igual a --as question")
+    .option(
+      "--document",
+      "o produto é um documento (plano, análise): sem gates nem correções automáticas — igual a --as document",
+    )
     .option(
       "--on-overlap <decision>",
       "se houver Feature ativa sobreposta: isolate | absorb (sem perguntar)",
@@ -81,12 +88,18 @@ export function registerRunCommand(program: Command): void {
         process.exitCode = 1;
         return;
       }
+      if ([options.ask, options.document, options.as].filter(Boolean).length > 1) {
+        console.error("Use só um entre --ask, --document e --as.");
+        process.exitCode = 1;
+        return;
+      }
+      const forcedIntent = options.ask ? "question" : options.document ? "document" : options.as;
       const body = {
         projectId: await resolveProjectRef(options.project),
         objective,
         ...(options.harness !== undefined ? { harness: options.harness } : {}),
         ...(options.prefer !== undefined ? { prefer: options.prefer } : {}),
-        ...(options.as !== undefined ? { as: options.as } : {}),
+        ...(forcedIntent !== undefined ? { as: forcedIntent } : {}),
         ...(options.autoResolve ? { questionMode: "auto" } : {}),
       };
       let response: RunResponse;

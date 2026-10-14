@@ -30,6 +30,48 @@ function readNew(path: string, state: { offset: number; partial: string }): stri
   }
 }
 
+interface GateView {
+  gate: string;
+  command?: string;
+  status: "running" | "passed" | "failed";
+  startedAt: string;
+  durationMs?: number;
+}
+
+/** Etapas dos quality gates da iteração atual, a partir dos eventos `quality.gate_*`. */
+export function gatesOf(
+  events: Array<{ type: string; payload: unknown; createdAt: string | Date }>,
+  iteration: number,
+): GateView[] {
+  const gates = new Map<string, GateView>();
+  for (const event of events) {
+    if (event.type !== "quality.gate_started" && event.type !== "quality.gate_finished") continue;
+    const payload = (event.payload ?? {}) as {
+      iteration?: number;
+      gate?: string;
+      command?: string;
+      status?: "passed" | "failed";
+      durationMs?: number;
+    };
+    if (payload.iteration !== iteration || !payload.gate) continue;
+    if (event.type === "quality.gate_started") {
+      gates.set(payload.gate, {
+        gate: payload.gate,
+        ...(payload.command ? { command: payload.command } : {}),
+        status: "running",
+        startedAt: new Date(event.createdAt).toISOString(),
+      });
+    } else {
+      const current = gates.get(payload.gate);
+      if (current && payload.status) {
+        current.status = payload.status;
+        if (payload.durationMs !== undefined) current.durationMs = payload.durationMs;
+      }
+    }
+  }
+  return [...gates.values()];
+}
+
 export function registerLiveRoutes(app: FastifyInstance, deps: ServerDeps): void {
   app.get("/features/:id/board", async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -54,6 +96,7 @@ export function registerLiveRoutes(app: FastifyInstance, deps: ServerDeps): void
       }),
     );
     return {
+      gates: gatesOf(events, feature.fixIteration),
       feature: {
         id: feature.id,
         objective: feature.objective,
@@ -96,6 +139,67 @@ export function registerLiveRoutes(app: FastifyInstance, deps: ServerDeps): void
         createdAt: event.createdAt,
       })),
     };
+  });
+
+  app.get("/features/:id/gates/live", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { follow } = request.query as { follow?: string };
+    const feature = await deps.features.getById(id);
+    if (!feature) {
+      reply.code(404);
+      return { error: "feature não encontrada" };
+    }
+    const gateLogPathOf = deps.gateLogPath;
+    if (!gateLogPathOf) {
+      reply.code(501);
+      return { error: "logs de gates não configurados neste daemon" };
+    }
+
+    if (follow !== "true" && follow !== "1") {
+      const state = { offset: 0, partial: "" };
+      const lines = readNew(gateLogPathOf(id, feature.fixIteration), state);
+      if (state.partial) lines.push(state.partial);
+      return { iteration: feature.fixIteration, lines };
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    let closed = false;
+    request.raw.on("close", () => {
+      closed = true;
+    });
+    const send = (event: string | undefined, data: unknown) => {
+      if (!closed)
+        reply.raw.write(`${event ? `event: ${event}\n` : ""}data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    let iteration = feature.fixIteration;
+    let state = { offset: 0, partial: "" };
+    let idleRounds = 0;
+    send("attempt", { n: iteration, target: null, status: "validating" });
+    while (!closed) {
+      const fresh = await deps.features.getById(id);
+      if (fresh && fresh.fixIteration !== iteration) {
+        // Nova rodada de correção → novo log; o anterior já foi lido até o fim.
+        iteration = fresh.fixIteration;
+        state = { offset: 0, partial: "" };
+        send("attempt", { n: iteration, target: null, status: fresh.status });
+      }
+      const lines = readNew(gateLogPathOf(id, iteration), state);
+      for (const line of lines) send(undefined, { line });
+      idleRounds = lines.length > 0 ? 0 : idleRounds + 1;
+      // Encerra quando a Feature saiu de `validating` e o log parou de crescer.
+      if (fresh && fresh.status !== "validating" && idleRounds >= 2) {
+        send("done", { status: fresh.status });
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    }
+    reply.raw.end();
   });
 
   app.get("/tasks/:id/live", async (request, reply) => {

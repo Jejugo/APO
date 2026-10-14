@@ -34,7 +34,8 @@ export const FEATURE_TRANSITIONS = createTransitionTable<FeatureStatus>([
   ["planning", ["executing", "planning", ...ESCAPE_HATCHES]], // "planning" de novo = replan
   ["executing", ["integrating", "paused_capacity", ...ESCAPE_HATCHES]],
   ["paused_capacity", ["executing", ...ESCAPE_HATCHES]],
-  ["integrating", ["validating", ...ESCAPE_HATCHES]],
+  // Feature de documento (intent `document`) não roda quality gates: integra → review.
+  ["integrating", ["validating", "reviewing", ...ESCAPE_HATCHES]],
   ["validating", ["reviewing", "fixing", ...ESCAPE_HATCHES]],
   ["reviewing", ["fixing", "awaiting_approval", ...ESCAPE_HATCHES]],
   ["fixing", ["executing", ...ESCAPE_HATCHES]],

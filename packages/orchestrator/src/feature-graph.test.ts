@@ -216,6 +216,7 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     featurePreference?: ExecutionPreference;
     plan?: FeaturePlan;
     slots?: WorkerSlots;
+    intent?: "feature" | "bugfix" | "document";
   }) {
     let project = await repos.projects.create({
       id: randomUUID(),
@@ -229,7 +230,7 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
       id: randomUUID(),
       projectId: project.id,
       objective,
-      intent: "feature",
+      intent: options.intent ?? "feature",
       ...(options.featurePreference ? { executionPreference: options.featurePreference } : {}),
       ...(options.plan ? { plan: options.plan } : {}),
     });
@@ -792,6 +793,34 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
       .map((row) => row.iteration);
     expect(iterations).toEqual([0, 1]);
     expect(prs.created[0]?.body).toContain("Rodadas de correção: 1");
+  });
+
+  it("Feature de documento: sem gates e sem Tasks corretivas; os achados vão para o humano", async () => {
+    // O gate falharia se rodasse: provar que foi pulado.
+    projectYaml("quality:\n  commands:\n    tests: exit 1\n");
+    const { feature, deps, input } = await setup({
+      intent: "document",
+      targets: [
+        fakeTarget(
+          "fake-a",
+          "anthropic",
+          [{ writeFile: { path: "plano.md", content: "# plano" }, commit: "docs: plano" }],
+          reviewerRounds([{ severity: "high", description: "falta a seção 5", file: "plano.md" }]),
+        ),
+      ],
+    });
+    const graph = buildFeatureGraph(deps, new MemorySaver());
+    await graph.invoke(input, { configurable: { thread_id: feature.id } });
+
+    const { feature: waiting, tasks } = await finalState(feature.id);
+    expect(waiting?.status).toBe("awaiting_approval");
+    expect(waiting?.fixIteration).toBe(0);
+    expect(tasks.filter((task) => task.origin === "review_fix")).toHaveLength(0);
+    const rows = (await repos.qualityResults.listByFeature(feature.id)).map((row) => row.gate);
+    expect(rows).toEqual(["requirements", "review"]); // nenhum gate de build/lint/tests
+    expect(waiting?.deliverySummary).toContain("falta a seção 5");
+    const events = (await repos.events.listByFeature(feature.id)).map((event) => event.type);
+    expect(events).toContain("quality.skipped");
   });
 
   it("M4.1/M4.5: gate falhando vira Task corretiva com a saída do comando", async () => {

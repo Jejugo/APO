@@ -20,17 +20,37 @@ export interface GateResult {
 
 const OUTPUT_TAIL = 4000;
 
+/** Acompanhamento ao vivo (`apo watch`): início, saída e fim de cada etapa. */
+export interface QualityGateHooks {
+  onStart?(gate: GateResult["gate"], command?: string): void;
+  onOutput?(gate: GateResult["gate"], chunk: string): void;
+  onFinish?(result: GateResult): void;
+}
+
 export async function runQualityGates(
   repoPath: string,
   integrationPath: string,
   env?: Record<string, string>,
+  hooks: QualityGateHooks = {},
 ): Promise<GateResult[]> {
   const commands = loadProjectConfig(repoPath).quality?.commands ?? {};
   const results: GateResult[] = [];
 
   if (QUALITY_GATES.some((gate) => commands[gate])) {
     const started = Date.now();
-    const prepared = await prepareWorktree(repoPath, integrationPath, env);
+    const prepareCommand = loadProjectConfig(repoPath).workspace?.prepare;
+    if (prepareCommand) hooks.onStart?.("prepare", prepareCommand);
+    const prepared = await prepareWorktree(repoPath, integrationPath, env, (chunk) =>
+      hooks.onOutput?.("prepare", chunk),
+    );
+    if (prepareCommand) {
+      hooks.onFinish?.({
+        gate: "prepare",
+        status: prepared.passed ? "passed" : "failed",
+        command: prepareCommand,
+        durationMs: Date.now() - started,
+      });
+    }
     if (!prepared.passed) {
       results.push({
         gate: "prepare",
@@ -49,21 +69,26 @@ export async function runQualityGates(
       continue;
     }
     const started = Date.now();
-    const run = await execa(command, {
+    hooks.onStart?.(gate, command);
+    const process = execa(command, {
       cwd: integrationPath,
       shell: true,
       reject: false,
       all: true,
       ...(env ? { env, extendEnv: false } : {}),
     });
+    process.all?.on("data", (chunk: Buffer) => hooks.onOutput?.(gate, chunk.toString("utf8")));
+    const run = await process;
     const passed = run.exitCode === 0;
-    results.push({
+    const result: GateResult = {
       gate,
       status: passed ? "passed" : "failed",
       command,
       output: (run.all ?? "").slice(-OUTPUT_TAIL),
       durationMs: Date.now() - started,
-    });
+    };
+    results.push(result);
+    hooks.onFinish?.(result);
     if (!passed) break;
   }
   return results;

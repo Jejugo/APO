@@ -3,8 +3,10 @@
 // agente daquela Task ao vivo (o mesmo do `apo task tail`); `q` volta/sai.
 
 import { daemonRequest } from "../daemon-client.js";
+import { formatDuration } from "./duration.js";
 import { c, formatAgentLine, stripAnsi } from "./format.js";
-import { followTask } from "./tail.js";
+import { ENTER_SCREEN, LEAVE_SCREEN, ScreenPainter } from "./screen.js";
+import { followGates, followTask } from "./tail.js";
 
 interface Board {
   feature: {
@@ -14,7 +16,15 @@ interface Board {
     fixIteration: number;
     prUrl: string | null;
     createdAt: string;
+    updatedAt: string;
   };
+  gates?: Array<{
+    gate: string;
+    command?: string;
+    status: "running" | "passed" | "failed";
+    startedAt: string;
+    durationMs?: number;
+  }>;
   tasks: Array<{
     id: string;
     seq: number;
@@ -57,13 +67,7 @@ const ICON: Record<string, string> = {
 };
 
 function elapsed(from: string, to?: string | null): string {
-  const seconds = Math.max(
-    0,
-    Math.round(((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000),
-  );
-  return seconds < 60
-    ? `${seconds}s`
-    : `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+  return formatDuration(((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000);
 }
 
 function fit(text: string, width: number): string {
@@ -95,12 +99,12 @@ function summarizeEvent(event: Board["events"][number]): string {
   return `${c.dim(time)} ${event.type}${detail ? c.dim(` ${detail}`) : ""}`;
 }
 
-function render(board: Board, input: string): string {
+function render(board: Board, input: string): string[] {
   const width = Math.max(60, process.stdout.columns ?? 100);
   const titleWidth = Math.max(20, width - 52);
   const f = board.feature;
   const lines = [
-    `${c.bold("APO")} · ${fit(f.objective, width - 40)} ${c.bold(`[${f.status}]`)} ${c.dim(elapsed(f.createdAt))}`,
+    `${c.bold("APO")} · ${fit(f.objective, width - 52)} ${c.bold(`[${f.status}${TERMINAL.has(f.status) ? "" : ` ${elapsed(f.updatedAt)}`}]`)} ${c.dim(`há ${elapsed(f.createdAt)}`)}`,
     c.dim("─".repeat(width)),
     c.dim(`  #  ${"task".padEnd(titleWidth)} ${"agente".padEnd(13)} ${"tempo".padEnd(8)} estado`),
   ];
@@ -113,6 +117,22 @@ function render(board: Board, input: string): string {
     lines.push(
       `${ICON[task.status] ?? " "} ${String(task.seq).padStart(2)}  ${fit(task.title, titleWidth)} ${fit(agent, 13)} ${fit(time, 8)} ${task.status}${deps}`,
     );
+  }
+  if (f.status === "validating" && (board.gates?.length ?? 0) > 0) {
+    lines.push(c.dim("─".repeat(width)), c.dim("quality gates:"));
+    for (const gate of board.gates ?? []) {
+      const icon =
+        gate.status === "running"
+          ? c.yellow("●")
+          : gate.status === "passed"
+            ? c.green("✓")
+            : c.red("✗");
+      const time =
+        gate.durationMs !== undefined
+          ? formatDuration(gate.durationMs / 1000)
+          : elapsed(gate.startedAt);
+      lines.push(` ${icon} ${fit(gate.gate, 10)} ${fit(time, 8)} ${c.dim(gate.command ?? "")}`);
+    }
   }
   lines.push(c.dim("─".repeat(width)), c.dim("últimos eventos:"));
   // Evento longo (ex.: motivo de um plan_change) não pode quebrar o painel.
@@ -142,16 +162,18 @@ function render(board: Board, input: string): string {
   if (f.prUrl) lines.push("", `PR: ${f.prUrl}`);
   lines.push(
     "",
-    c.dim(`[número + Enter] ver o agente ao vivo   [q] sair   ${input ? `› ${input}` : ""}`),
+    c.dim(
+      `[número + Enter] ver o agente ao vivo   ${(board.gates?.length ?? 0) > 0 ? "[g] gates   " : ""}[q] sair   ${input ? `› ${input}` : ""}`,
+    ),
   );
-  return lines.join("\n");
+  return lines;
 }
 
 export async function watchFeature(featureId: string): Promise<void> {
   const interactive = process.stdin.isTTY && process.stdout.isTTY;
   if (!interactive) {
     // Sem terminal: imprime uma foto e sai (útil em scripts).
-    console.log(render(await daemonRequest<Board>(`/features/${featureId}/board`), ""));
+    console.log(render(await daemonRequest<Board>(`/features/${featureId}/board`), "").join("\n"));
     return;
   }
 
@@ -164,8 +186,26 @@ export async function watchFeature(featureId: string): Promise<void> {
   });
   let board: Board | undefined;
 
+  // Tela alternativa + pintura por diferença: o painel é desenhado uma vez e só o
+  // que muda (segundos, estados) é reescrito no lugar — sem um quadro novo por tick.
+  const painter = new ScreenPainter();
+  let inScreen = false;
+  const enterScreen = () => {
+    if (inScreen) return;
+    inScreen = true;
+    painter.reset();
+    process.stdout.write(ENTER_SCREEN);
+  };
+  const leaveScreen = () => {
+    if (!inScreen) return;
+    inScreen = false;
+    process.stdout.write(LEAVE_SCREEN);
+  };
+  process.on("exit", leaveScreen);
   const draw = () => {
-    if (mode === "board" && board) process.stdout.write(`\x1b[2J\x1b[H${render(board, input)}\n`);
+    if (mode === "board" && board) {
+      process.stdout.write(painter.paint(render(board, input), process.stdout.columns ?? 100));
+    }
   };
   const refresh = async () => {
     try {
@@ -173,7 +213,10 @@ export async function watchFeature(featureId: string): Promise<void> {
       draw();
     } catch (error) {
       process.stdout.write(
-        `\x1b[2J\x1b[H${c.red(`erro ao falar com o daemon: ${(error as Error).message}`)}\n`,
+        painter.paint(
+          [c.red(`erro ao falar com o daemon: ${(error as Error).message}`)],
+          process.stdout.columns ?? 100,
+        ),
       );
     }
   };
@@ -182,8 +225,9 @@ export async function watchFeature(featureId: string): Promise<void> {
     const task = board?.tasks.find((candidate) => candidate.seq === seq);
     if (!task) return;
     mode = "tail";
+    leaveScreen();
     process.stdout.write(
-      `\x1b[2J\x1b[H${c.bold(`Task #${task.seq} — ${task.title}`)}  ${c.dim("[q] voltar ao painel")}\n\n`,
+      `${c.bold(`Task #${task.seq} — ${task.title}`)}  ${c.dim("[q] voltar ao painel")}\n\n`,
     );
     const follow = await followTask(task.id, {
       onAttempt: (attempt) =>
@@ -194,6 +238,20 @@ export async function watchFeature(featureId: string): Promise<void> {
         for (const out of formatAgentLine(line)) console.log(out);
       },
       onDone: (status) => console.log(c.bold(`\n── Task ${status}. [q] voltar ──`)),
+    });
+    stopTail = follow.stop;
+  };
+
+  const openGates = async () => {
+    mode = "tail";
+    leaveScreen();
+    process.stdout.write(`${c.bold("Quality gates")}  ${c.dim("[q] voltar ao painel")}\n\n`);
+    const follow = await followGates(featureId, {
+      onAttempt: (attempt) => console.log(c.bold(`── rodada ${attempt.n} ──`)),
+      // Barras de progresso reescrevem a linha com \r: fica só o último estado.
+      onLine: (line) => console.log(stripAnsi(line.split("\r").at(-1) ?? "")),
+      onDone: (status) =>
+        console.log(c.bold(`\n── fim dos gates (Feature ${status}). [q] voltar ──`)),
     });
     stopTail = follow.stop;
   };
@@ -210,11 +268,16 @@ export async function watchFeature(featureId: string): Promise<void> {
         stopTail?.();
         stopTail = undefined;
         mode = "board";
+        enterScreen();
         draw();
       }
       return;
     }
     if (key === "q") return quit();
+    if (key === "g" && (board?.gates?.length ?? 0) > 0) {
+      void openGates();
+      return;
+    }
     if (/^\d$/.test(key)) input += key;
     else if (key === "\u007f") input = input.slice(0, -1);
     else if ((key === "\r" || key === "\n") && input) {
@@ -230,13 +293,26 @@ export async function watchFeature(featureId: string): Promise<void> {
     for (const key of chunk) handleKey(key);
   });
 
+  enterScreen();
+  const onResize = () => {
+    painter.reset();
+    draw();
+  };
+  process.stdout.on("resize", onResize);
   await refresh();
   const timer = setInterval(() => {
     if (mode === "board") void refresh();
   }, REFRESH_MS);
+  // Os tempos andam com o relógio local a cada segundo, sem esperar o daemon.
+  const clock = setInterval(draw, 1_000);
   await done;
   clearInterval(timer);
+  clearInterval(clock);
+  process.stdout.off("resize", onResize);
   stopTail?.();
+  leaveScreen();
+  // Deixa o último quadro no terminal normal, para consulta depois de sair.
+  if (board) console.log(render(board, "").join("\n"));
   process.stdin.setRawMode(false);
   process.stdin.pause();
   if (board && TERMINAL.has(board.feature.status))

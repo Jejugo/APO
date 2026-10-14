@@ -115,4 +115,16 @@ describe("executionCandidates", () => {
   it("se só sobrar target de planejamento, ele executa", () => {
     expect(executionCandidates([opus]).map((c) => c.targetId)).toEqual(["opus"]);
   });
+
+  it("preferência explícita para o target só de planejamento o mantém (ex.: role fixado)", () => {
+    const preference = {
+      mode: "preferred" as const,
+      harness: "claude-code" as const,
+      provider: "anthropic" as const,
+    };
+    const ids = (preferences: Parameters<typeof executionCandidates>[1]) =>
+      executionCandidates([opus, sonnet, sol], preferences).map((c) => c.targetId);
+    expect(ids([preference])).toContain("opus");
+    expect(ids([{ ...preference, mode: "auto" }])).not.toContain("opus");
+  });
 });

@@ -28,7 +28,7 @@ export type FeatureStatus =
   | "failed"
   | "needs_human";
 
-export type FeatureIntent = "bugfix" | "feature";
+export type FeatureIntent = "bugfix" | "feature" | "document";
 
 export interface Feature {
   id: string;

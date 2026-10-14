@@ -48,6 +48,8 @@ export interface ReviewContext {
   gatesSummary: string;
   cwd: string;
   timeoutMs: number;
+  /** Feature de documento: avalia o texto; os achados vão para o humano, não viram Tasks. */
+  document?: boolean;
 }
 
 export async function verifyRequirements(
@@ -93,10 +95,21 @@ export async function reviewIntegration(
     {
       prompt: [
         "Revise a mudança abaixo (este diretório é a branch de integração; leia os arquivos que precisar).",
-        "Procure: bugs, lacunas em relação ao objetivo, regressões, problemas de segurança, complexidade",
-        "desnecessária, violações da arquitetura existente e testes faltando.",
+        ...(context.document
+          ? [
+              "A mudança é um DOCUMENTO (plano/análise), sem código a executar. Avalie se está completo em",
+              "relação ao objetivo, coerente com o código existente que cita (confira os arquivos e linhas",
+              "citados) e verificável. Seus achados serão lidos por uma pessoa, não viram Tasks: seja",
+              "objetivo e deixe de fora refinamentos de estilo.",
+            ]
+          : [
+              "Procure: bugs, lacunas em relação ao objetivo, regressões, problemas de segurança, complexidade",
+              "desnecessária, violações da arquitetura existente e testes faltando.",
+            ]),
         "Severidade: critical (quebra/segurança), high (bug provável), medium (deveria ser corrigido antes",
         "do merge), low (sugestão). Só reporte o que for acionável; lista vazia é uma resposta válida.",
+        "Não reporte como achado a corrigir o que o objetivo marca como decisão humana, ponto em aberto",
+        "ou risco a ser apontado: isso é para o humano decidir, não para ser resolvido por uma Task.",
         `Objetivo: ${context.objective}`,
         `Quality gates: ${context.gatesSummary}`,
         "Diff em relação à branch base:",

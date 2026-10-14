@@ -11,11 +11,26 @@ export interface TailHandlers {
 }
 
 /** Devolve uma função que encerra o acompanhamento. */
-export async function followTask(
+export function followTask(
   taskId: string,
   handlers: TailHandlers,
 ): Promise<{ stop(): void; finished: Promise<void> }> {
-  const response: IncomingMessage = await daemonStream(`/tasks/${taskId}/live?follow=true`);
+  return followStream(`/tasks/${taskId}/live?follow=true`, handlers);
+}
+
+/** Saída ao vivo dos quality gates da Feature (fase `validating`). */
+export function followGates(
+  featureId: string,
+  handlers: TailHandlers,
+): Promise<{ stop(): void; finished: Promise<void> }> {
+  return followStream(`/features/${featureId}/gates/live?follow=true`, handlers);
+}
+
+async function followStream(
+  path: string,
+  handlers: TailHandlers,
+): Promise<{ stop(): void; finished: Promise<void> }> {
+  const response: IncomingMessage = await daemonStream(path);
   response.setEncoding("utf8");
   const finished = (async () => {
     let buffer = "";

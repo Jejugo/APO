@@ -18,13 +18,21 @@ export function loadProjectConfig(repoPath: string) {
   return loadConfig(join(repoPath, ".apo", "project.yaml"), ProjectConfigSchema);
 }
 
-async function runShell(command: string, cwd: string, env?: Record<string, string>) {
-  return execa(command, {
+async function runShell(
+  command: string,
+  cwd: string,
+  env?: Record<string, string>,
+  onOutput?: (chunk: string) => void,
+) {
+  const process = execa(command, {
     cwd,
     shell: true,
     reject: false,
+    all: true,
     ...(env ? { env, extendEnv: false } : {}),
   });
+  if (onOutput) process.all?.on("data", (chunk: Buffer) => onOutput(chunk.toString("utf8")));
+  return process;
 }
 
 /** `workspace.prepare` do project.yaml (ex.: "pnpm install") numa worktree. */
@@ -32,10 +40,11 @@ export async function prepareWorktree(
   repoPath: string,
   worktreePath: string,
   env?: Record<string, string>,
+  onOutput?: (chunk: string) => void,
 ): Promise<VerifyResult> {
   const command = loadProjectConfig(repoPath).workspace?.prepare;
   if (!command) return { passed: true };
-  const result = await runShell(command, worktreePath, env);
+  const result = await runShell(command, worktreePath, env, onOutput);
   if (result.exitCode !== 0) {
     const output = `${result.stdout}\n${result.stderr}`.trim().slice(-2000);
     return {

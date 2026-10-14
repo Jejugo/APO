@@ -76,6 +76,29 @@ describe("QualityGateRunner (M4.1)", () => {
     expect(results[2]?.output).toContain("erro TS2322");
   });
 
+  it("hooks: início, saída e fim de cada etapa, na ordem (acompanhamento ao vivo)", async () => {
+    const dir = repoWith(
+      "workspace:\n  prepare: echo instalando\nquality:\n  commands:\n    build: echo compilando\n    lint: echo ruim && exit 1\n",
+    );
+    const log: string[] = [];
+    await runQualityGates(dir, dir, undefined, {
+      onStart: (gate, command) => log.push(`start ${gate} ${command}`),
+      onOutput: (gate, chunk) => log.push(`out ${gate} ${chunk.trim()}`),
+      onFinish: (result) => log.push(`end ${result.gate} ${result.status}`),
+    });
+    expect(log).toEqual([
+      "start prepare echo instalando",
+      "out prepare instalando",
+      "end prepare passed",
+      "start build echo compilando",
+      "out build compilando",
+      "end build passed",
+      "start lint echo ruim && exit 1",
+      "out lint ruim",
+      "end lint failed",
+    ]);
+  });
+
   it("prepare falhando para tudo antes dos gates", async () => {
     const dir = repoWith(
       "workspace:\n  prepare: exit 1\nquality:\n  commands:\n    tests: 'true'\n",

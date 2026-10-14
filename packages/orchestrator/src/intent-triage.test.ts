@@ -5,7 +5,7 @@ import { classifyDeterministic, triageIntent } from "./intent-triage.js";
 
 // M1 — "Testes obrigatórios": tabela com pelo menos 30 frases reais em
 // português e inglês.
-const CASES: Array<[string, "question" | "bugfix" | "feature"]> = [
+const CASES: Array<[string, "question" | "document" | "bugfix" | "feature"]> = [
   // português — question
   ["o que faz esse módulo?", "question"],
   ["por que esse endpoint retorna 404?", "question"],
@@ -31,6 +31,14 @@ const CASES: Array<[string, "question" | "bugfix" | "feature"]> = [
   ["construa um dashboard de métricas", "feature"],
   ["adicionar um botão de exportar CSV", "feature"],
   ["criar endpoint de busca por nome", "feature"],
+  // documento
+  ["escreva um plano técnico para a grade semanal de aulas", "document"],
+  ["elabore a análise de impacto da troca de ORM", "document"],
+  ["Esta Feature produz SOMENTE um documento de plano técnico", "document"],
+  ["write a technical plan for the billing migration", "document"],
+  ["draft an ADR about the queue choice", "document"],
+  // pedir o documento E implementar é feature, não documento
+  ["escreva o plano e implemente a grade semanal", "feature"],
   // english — question
   ["what does this module do?", "question"],
   ["why does this endpoint return 404?", "question"],

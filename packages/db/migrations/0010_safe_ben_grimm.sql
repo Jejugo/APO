@@ -1,0 +1,1 @@
+ALTER TYPE "public"."feature_intent" ADD VALUE 'document';

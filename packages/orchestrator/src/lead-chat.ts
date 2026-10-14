@@ -29,7 +29,7 @@ export const LeadActionSchema = z.object({
   featureId: z.string().optional(),
   taskId: z.string().optional(),
   objective: z.string().optional(),
-  intent: z.enum(["feature", "bugfix"]).optional(),
+  intent: z.enum(["feature", "bugfix", "document"]).optional(),
   change: z.string().optional(),
   reason: z.string().optional(),
   preferenceMode: z.enum(["auto", "preferred", "forced"]).optional(),
@@ -112,7 +112,7 @@ function renderContext(context: ChatContext): string {
 export const LEAD_CHAT_INSTRUCTIONS = [
   "Você conversa com o usuário sobre o desenvolvimento deste projeto. Responda com UMA ação:",
   "- answer: responder, explicar ou pedir esclarecimento (sem mudar nada). Use para perguntas sobre o código, o estado das Features ou quando o pedido for ambíguo.",
-  "- create_feature: começar trabalho novo. `objective` autossuficiente (o worker não vê esta conversa); `intent` feature ou bugfix. Se o daemon avisou de sobreposição com uma Feature ativa e o usuário escolheu, repita com `onOverlap` isolate ou absorb.",
+  "- create_feature: começar trabalho novo. `objective` autossuficiente (o worker não vê esta conversa); `intent` feature, bugfix ou document (o produto é um plano/análise/relatório, sem mudar código: sem gates nem correções automáticas). Se o daemon avisou de sobreposição com uma Feature ativa e o usuário escolheu, repita com `onOverlap` isolate ou absorb.",
   "- update_requirement: o usuário mudou/acrescentou um requisito de uma Feature existente (`featureId`, `change` autossuficiente). Em execução, o daemon cancela o que não começou e replaneja; esperando aprovação, vira um ajuste.",
   "- replan: replanejar o restante de uma Feature sem mudar requisito (`featureId`, `reason`).",
   "- set_preference: onde executar. Sem `taskId` vale para a Feature; com `taskId`, troca o target da Task agora. `preferenceMode` auto|preferred|forced e `provider` ou `harness`.",

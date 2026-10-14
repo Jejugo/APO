@@ -164,6 +164,9 @@ async function main(): Promise<void> {
   const attemptLogPath = (attemptId: string) =>
     join(apoHome(), "logs", "attempts", `${attemptId}.log`);
 
+  const gateLogPath = (featureId: string, iteration: number) =>
+    join(apoHome(), "logs", "gates", `${featureId}-${iteration}.log`);
+
   const featureRunner = new FeatureRunner(
     {
       logger,
@@ -191,6 +194,7 @@ async function main(): Promise<void> {
         return buildWorkerEnvironment(projectConfig.worker?.env?.allow ?? []);
       },
       attemptLogPath,
+      gateLogPath,
       runsRoot: join(apoHome(), "runs"),
       stallTimeoutMs: (limits?.stallTimeoutMinutes ?? 10) * 60_000,
       // M2.4: compartilhado entre todas as Features do daemon.
@@ -234,6 +238,7 @@ async function main(): Promise<void> {
 
   const serverDeps: ServerDeps = {
     attemptLogPath,
+    gateLogPath,
     logger,
     projects,
     projectAgents,
