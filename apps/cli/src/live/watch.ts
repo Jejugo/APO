@@ -48,6 +48,9 @@ interface Board {
       startedAt: string;
       endedAt: string | null;
     } | null;
+    /** Soma de todas as tentativas (falhas incluídas), em ms. */
+    spentMs?: number;
+    attemptCount?: number;
   }>;
   events: Array<{ type: string; payload: unknown; createdAt: string }>;
   questions?: Array<{
@@ -120,7 +123,13 @@ function render(board: Board, input: string): string[] {
     const agent = task.attempt?.target
       ? `${task.attempt.target}${task.attempt.n > 1 ? ` #${task.attempt.n}` : ""}`
       : "";
-    const time = task.attempt ? elapsed(task.attempt.startedAt, task.attempt.endedAt) : "";
+    // Com mais de uma tentativa, o tempo é o gasto total na Task (inclui as que falharam).
+    const time =
+      task.spentMs !== undefined && (task.attemptCount ?? 0) > 1
+        ? formatDuration(task.spentMs / 1000)
+        : task.attempt
+          ? elapsed(task.attempt.startedAt, task.attempt.endedAt)
+          : "";
     const deps = task.dependsOn.length > 0 ? c.dim(` ← #${task.dependsOn.join(", #")}`) : "";
     lines.push(
       `${ICON[task.status] ?? " "} ${String(task.seq).padStart(2)}  ${fit(task.title, titleWidth)} ${fit(agent, 13)} ${fit(time, 8)} ${task.status}${deps}`,

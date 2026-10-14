@@ -6,6 +6,7 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import type { ServerDeps } from "../server-deps.js";
+import { buildTimeline } from "../timeline.js";
 
 const POLL_MS = 500;
 const ACTIVE_ATTEMPT = new Set(["starting", "working"]);
@@ -155,8 +156,17 @@ export function registerLiveRoutes(app: FastifyInstance, deps: ServerDeps): void
       },
       tasks: await Promise.all(
         tasks.map(async (task) => {
-          const attempt = (await deps.taskAttempts.listByTask(task.id)).at(-1);
+          const attempts = await deps.taskAttempts.listByTask(task.id);
+          const attempt = attempts.at(-1);
+          // Tempo somado de todas as tentativas (falhas incluídas), não só da última.
+          const spentMs = attempts.reduce(
+            (sum, item) =>
+              sum + ((item.endedAt ?? new Date()).getTime() - item.startedAt.getTime()),
+            0,
+          );
           return {
+            spentMs,
+            attemptCount: attempts.length,
             id: task.id,
             seq: task.seq,
             title: task.title,
@@ -262,6 +272,51 @@ export function registerLiveRoutes(app: FastifyInstance, deps: ServerDeps): void
   registerPhaseLog("/features/:id/review/live", "reviewing", (id, it) =>
     deps.reviewLogPath?.(id, it),
   );
+
+  app.get("/features/:id/timeline", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const feature = await deps.features.getById(id);
+    if (!feature) {
+      reply.code(404);
+      return { error: "feature não encontrada" };
+    }
+    const tasks = await deps.tasks.listByFeature(id);
+    const attempts = (await Promise.all(tasks.map((task) => deps.taskAttempts.listByTask(task.id))))
+      .flat()
+      .map((attempt) => ({
+        taskId: attempt.taskId,
+        n: attempt.n,
+        targetId: attempt.targetId,
+        status: attempt.status,
+        startedAt: attempt.startedAt,
+        endedAt: attempt.endedAt,
+      }));
+    const timeline = buildTimeline({
+      feature: {
+        createdAt: feature.createdAt,
+        status: feature.status,
+        updatedAt: feature.updatedAt,
+      },
+      events: await deps.events.listByFeature(id),
+      attempts,
+      tasks: tasks.map((task) => ({ id: task.id, seq: task.seq, title: task.title })),
+      now: new Date(),
+    });
+    return {
+      startedAt: timeline.startedAt,
+      endedAt: timeline.endedAt,
+      totalMs: timeline.totalMs,
+      idleMs: timeline.idleMs,
+      totalsMs: timeline.totalsMs,
+      segments: timeline.segments.map((segment) => ({
+        kind: segment.kind,
+        label: segment.label,
+        status: segment.status,
+        startedAt: segment.startedAt,
+        endedAt: segment.endedAt,
+      })),
+    };
+  });
 
   app.get("/tasks/:id/live", async (request, reply) => {
     const { id } = request.params as { id: string };

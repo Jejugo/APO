@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { daemonRequest } from "../daemon-client.js";
+import { type TimelineResponse, formatTimeline } from "../live/timeline-format.js";
 import { watchFeature } from "../live/watch.js";
 import { summarizeObjective } from "../objective-summary.js";
 import { resolveProjectRef } from "../project-ref.js";
@@ -76,6 +77,14 @@ export function registerFeatureCommands(program: Command): void {
       console.log(
         `Perguntas desta Feature: ${mode === "default" ? "modo herdado (global/projeto)" : mode}.`,
       );
+    });
+
+  feature
+    .command("timeline <id>")
+    .description("Onde o tempo foi: cada tentativa, gate, review, pausa e espera, com totais")
+    .action(async (id: string) => {
+      const timeline = await daemonRequest<TimelineResponse>(`/features/${id}/timeline`);
+      for (const line of formatTimeline(timeline)) console.log(line);
     });
 
   feature
