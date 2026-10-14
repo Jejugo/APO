@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type CompletionInput, evaluateCompletion } from "./completion.js";
-import { runQualityGates } from "./quality.js";
+import { gatesReusable, runQualityGates } from "./quality.js";
 
 const READY: CompletionInput = {
   gates: { build: "passed", lint: "passed", typecheck: "skipped", tests: "passed" },
@@ -143,5 +143,26 @@ describe("resumo de entrega (M4.7)", () => {
       "## Tasks\n\n- #1 a — feito\n- #2 b\n\n## Arquivos alterados\n\n- `src/a.ts`\n- `src/b.ts`",
     );
     expect(summary).toContain("- build: passed (`pnpm build`)\n- lint: skipped");
+  });
+});
+
+describe("reuso dos gates na retomada", () => {
+  const row = (status: string, commit: string | undefined, iteration = 0) => ({
+    iteration,
+    status,
+    details: commit === undefined ? null : { commit },
+  });
+
+  it("gates verdes no mesmo commit são reaproveitados", () => {
+    expect(gatesReusable([row("passed", "abc"), row("skipped", "abc")], 0, "abc")).toBe(true);
+  });
+
+  it("commit diferente, falha, linha sem commit ou outra rodada não reaproveitam", () => {
+    expect(gatesReusable([row("passed", "abc")], 0, "def")).toBe(false);
+    expect(gatesReusable([row("passed", "abc"), row("failed", "abc")], 0, "abc")).toBe(false);
+    expect(gatesReusable([row("passed", undefined)], 0, "abc")).toBe(false);
+    expect(gatesReusable([row("passed", "abc", 1)], 0, "abc")).toBe(false);
+    expect(gatesReusable([], 0, "abc")).toBe(false);
+    expect(gatesReusable([row("passed", "")], 0, "")).toBe(false);
   });
 });

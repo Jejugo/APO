@@ -219,7 +219,7 @@ async function main(): Promise<void> {
   if (interruptedCount > 0) {
     logger.info({ interruptedCount }, "recovery: attempts 'working' marcados como 'interrupted'");
   }
-  const resumeDeps = { features, projects, featureRunner, logger, worktreesRoot };
+  const resumeDeps = { features, projects, featureRunner, logger, worktreesRoot, events };
   // awaiting_approval fica de fora: espera `apo approve|reject`, que retoma o
   // interrupt pelo checkpoint (M4.8).
   await resumeFeatures(

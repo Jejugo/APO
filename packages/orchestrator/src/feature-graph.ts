@@ -37,6 +37,7 @@ import type { ProviderId } from "@apo/domain";
 import { emitEvent } from "@apo/observability";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import { Annotation, END, START, StateGraph, interrupt } from "@langchain/langgraph";
+import { execa } from "execa";
 import { appendTasks } from "./append-tasks.js";
 import type { AttemptControl } from "./attempt-control.js";
 import {
@@ -53,7 +54,13 @@ import { pickJudge, withJudge } from "./judge.js";
 import { distillMemories } from "./memory-writer.js";
 import { PLAN_CHANGE_REQUEST, PlanChangeRequestSchema, decidePlanChange } from "./plan-changes.js";
 import { type FeaturePlan, FeaturePlanSchema, singleTaskPlan, validatePlan } from "./plan.js";
-import { type GateResult, QUALITY_GATES, type QualityGate, runQualityGates } from "./quality.js";
+import {
+  type GateResult,
+  QUALITY_GATES,
+  type QualityGate,
+  gatesReusable,
+  runQualityGates,
+} from "./quality.js";
 import {
   QUESTION,
   type QuestionPayload,
@@ -651,6 +658,22 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
 
       await deps.features.updateStatus(state.featureId, "validating");
       const iteration = (await deps.features.getById(state.featureId))?.fixIteration ?? 0;
+      // Retomada sem mudança de código (ex.: o review pausou por capacidade e a
+      // Feature voltou): gates verdes desta rodada no mesmo commit continuam valendo.
+      const head = (
+        await execa("git", ["rev-parse", "HEAD"], { cwd: integrationPath, reject: false })
+      ).stdout.trim();
+      if (
+        gatesReusable(await deps.qualityResults.listByFeature(state.featureId), iteration, head)
+      ) {
+        await emitEvent(deps.events, deps.logger, {
+          type: "quality.reused",
+          projectId: state.projectId,
+          featureId: state.featureId,
+          payload: { iteration, commit: head },
+        });
+        return { outcome: "gates_passed" as const };
+      }
       const gateLog = deps.gateLogPath?.(state.featureId, iteration);
       const writeGateLog = (text: string) => {
         if (!gateLog) return;
@@ -710,6 +733,7 @@ export function buildFeatureGraph(deps: FeatureGraphDeps, checkpointer: BaseChec
           command: result.command ?? null,
           output: result.output ?? null,
           durationMs: result.durationMs,
+          details: { commit: head },
         });
       }
       await emitEvent(deps.events, deps.logger, {

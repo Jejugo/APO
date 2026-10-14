@@ -93,3 +93,26 @@ export async function runQualityGates(
   }
   return results;
 }
+
+/**
+ * Os gates desta rodada já estão verdes para este commit? Então rodá-los de novo
+ * não acrescenta nada (ex.: a Feature foi retomada depois de um review pausado
+ * por capacidade, sem mudança no código). Qualquer falha ou commit diferente
+ * força a execução.
+ */
+export function gatesReusable(
+  rows: Array<{ iteration: number; status: string; details: unknown }>,
+  iteration: number,
+  commit: string,
+): boolean {
+  const current = rows.filter((row) => row.iteration === iteration);
+  return (
+    commit !== "" &&
+    current.length > 0 &&
+    current.every(
+      (row) =>
+        (row.status === "passed" || row.status === "skipped") &&
+        (row.details as { commit?: string } | null)?.commit === commit,
+    )
+  );
+}

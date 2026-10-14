@@ -15,16 +15,33 @@ interface ResumeDeps {
   featureRunner: FeatureRunner;
   logger: Logger;
   worktreesRoot: string;
+  /** Usado para ler o `resumeAt` da última pausa por capacidade. */
+  events?: EventLog;
+}
+
+interface EventLog {
+  listByFeature(featureId: string): Promise<Array<{ type: string; payload: unknown }>>;
+}
+
+/** `resumeAt` da última pausa por capacidade da Feature, se houver. */
+export async function pausedUntil(events: EventLog, featureId: string): Promise<Date | undefined> {
+  const paused = (await events.listByFeature(featureId)).filter(
+    (event) => event.type === "feature.paused_capacity",
+  );
+  const resumeAt = (paused.at(-1)?.payload as { resumeAt?: unknown } | undefined)?.resumeAt;
+  return typeof resumeAt === "string" ? new Date(resumeAt) : undefined;
 }
 
 export async function resumeFeatures(
   deps: ResumeDeps,
   statuses: Parameters<FeatureRepository["listByStatuses"]>[0],
   reason: string,
+  eligible?: (featureId: string) => Promise<boolean>,
 ): Promise<number> {
   let resumed = 0;
   for (const feature of await deps.features.listByStatuses(statuses)) {
     if (deps.featureRunner.isRunning(feature.id)) continue;
+    if (eligible && !(await eligible(feature.id))) continue;
     const project = await deps.projects.getById(feature.projectId);
     // Repos temporários de testes antigos não existem mais — retomar só
     // geraria erro a cada boot.
@@ -64,9 +81,18 @@ export function startCapacityResumer(
       return availability === "available" || availability === "unknown";
     });
     if (!anyUsable) return;
-    void resumeFeatures(deps, ["paused_capacity"], "capacity-resume").catch((error: unknown) => {
-      deps.logger.error({ error }, "capacity-resume falhou");
-    });
+    // Só acorda a Feature depois do `resumeAt` da pausa: antes disso, a
+    // capacidade "voltar" (provider `unknown`) não quer dizer que ela pode rodar.
+    const eligible = async (featureId: string) => {
+      if (!deps.events) return true;
+      const until = await pausedUntil(deps.events, featureId);
+      return !until || Date.now() >= until.getTime();
+    };
+    void resumeFeatures(deps, ["paused_capacity"], "capacity-resume", eligible).catch(
+      (error: unknown) => {
+        deps.logger.error({ error }, "capacity-resume falhou");
+      },
+    );
   }, intervalMs);
   timer.unref();
   return timer;
