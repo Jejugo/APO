@@ -18,7 +18,12 @@ describe("transitionTask", () => {
     ["cancelled", "pending"],
     ["failed", "running"],
     ["ready", "needs_human"],
+    ["completed", "retrying"],
   ])("rejeita %s -> %s", (from, to) => {
     expect(() => transitionTask(from, to)).toThrow(InvalidTransitionError);
+  });
+
+  it("failed -> retrying é permitido (apo task retry)", () => {
+    expect(transitionTask("failed", "retrying")).toBe("retrying");
   });
 });

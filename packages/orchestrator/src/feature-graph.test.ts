@@ -670,6 +670,33 @@ describe("ApoNativeEngine — integração com FakeHarness", () => {
     ]);
   });
 
+  it("apo task retry: Task failed volta a retrying e a Feature conclui de novo", async () => {
+    let broken = true;
+    const { feature, deps, input } = await setup({
+      targets: [
+        fakeTarget("fake-a", "anthropic", () =>
+          broken
+            ? { fail: { kind: "crash" } }
+            : { writeFile: { path: "a.txt", content: "x" }, commit: "feat: a" },
+        ),
+      ],
+    });
+    await run(deps, input);
+    let state = await finalState(feature.id);
+    expect(state.feature?.status).toBe("failed");
+    expect(state.tasks[0]?.status).toBe("failed");
+
+    // O mesmo que a rota POST /tasks/:id/retry faz.
+    broken = false;
+    await repos.tasks.updateStatus(state.tasks[0]?.id ?? "", "retrying");
+    await repos.features.updateStatus(feature.id, "executing");
+    await run(deps, input);
+
+    state = await finalState(feature.id);
+    expect(state.feature?.status).toBe("completed");
+    expect(state.tasks[0]?.status).toBe("completed");
+  });
+
   it("todos os providers esgotados → paused_capacity, sem rodar nenhum worker", async () => {
     const capacity = new CapacityMonitor();
     capacity.recordFailure("anthropic", { kind: "quota_exhausted", message: "limite" });

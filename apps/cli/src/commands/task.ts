@@ -162,6 +162,16 @@ export function registerTaskCommands(program: Command): void {
     });
 
   task
+    .command("retry <id>")
+    .description(
+      "Tenta de novo uma Task que falhou: retoma a partir do handover da última tentativa",
+    )
+    .action(async (id: string) => {
+      await daemonRequest<{ status: string }>(`/tasks/${id}/retry`, { method: "POST" });
+      console.log("Task de volta à fila. Acompanhe com: apo watch <featureId>");
+    });
+
+  task
     .command("reroute <id>")
     .description(
       "Troca o target da Task: interrompe o attempt atual e continua no novo, com handover",

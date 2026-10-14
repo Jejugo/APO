@@ -19,7 +19,8 @@ export const TASK_TRANSITIONS = createTransitionTable<TaskStatus>([
   ["awaiting_answer", ["running", "needs_human", "cancelled"]],
   ["needs_human", ["running", "cancelled"]],
   ["completed", []],
-  ["failed", ["cancelled"]],
+  // Tentativa de novo (`apo task retry`): retoma do handover da última tentativa.
+  ["failed", ["retrying", "cancelled"]],
   ["cancelled", []],
 ]);
 

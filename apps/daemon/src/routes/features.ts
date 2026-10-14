@@ -427,6 +427,49 @@ export function registerFeatureRoutes(app: FastifyInstance, deps: ServerDeps): v
     return feature;
   });
 
+  // `apo task retry`: uma Task `failed` volta a `retrying` e a Feature a executar.
+  // O attempt seguinte reaproveita o handover da última tentativa (task-runner).
+  app.post("/tasks/:id/retry", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const task = await deps.tasks.getById(id);
+    if (!task) {
+      reply.code(404);
+      return { error: "task não encontrada" };
+    }
+    if (task.status !== "failed") {
+      reply.code(409);
+      return { error: `a Task está ${task.status}; só uma Task failed pode ser tentada de novo` };
+    }
+    const feature = await deps.features.getById(task.featureId);
+    if (!feature) {
+      reply.code(404);
+      return { error: "feature não encontrada" };
+    }
+    if (["completed", "cancelled", "awaiting_approval", "delivering"].includes(feature.status)) {
+      reply.code(409);
+      return { error: `a Feature está ${feature.status}; não dá para tentar a Task de novo` };
+    }
+    const project = await deps.projects.getById(feature.projectId);
+    if (!project) {
+      reply.code(404);
+      return { error: "project não encontrado" };
+    }
+
+    await deps.tasks.updateStatus(id, "retrying");
+    await deps.features.updateStatus(feature.id, "executing");
+    await emitEvent(deps.events, deps.logger, {
+      type: "task.retry_requested",
+      projectId: project.id,
+      featureId: feature.id,
+      taskId: id,
+      payload: { previousStatus: task.status },
+    });
+    if (!deps.featureRunner.isRunning(feature.id)) {
+      startRun(project, feature, "task retry");
+    }
+    return { taskId: id, featureId: feature.id, status: "retrying" };
+  });
+
   app.post("/features/:id/resume", async (request, reply) => {
     const { id } = request.params as { id: string };
     const feature = await deps.features.getById(id);
